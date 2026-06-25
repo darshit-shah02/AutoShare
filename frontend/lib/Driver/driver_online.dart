@@ -11,13 +11,11 @@ import 'dart:developer';
 class DriverOnline extends StatefulWidget {
   final String source;
   final String destination;
-  final String routeId;
 
   const DriverOnline({
     super.key,
     required this.source,
     required this.destination,
-    required this.routeId,
   });
 
   @override
@@ -47,8 +45,6 @@ class DriverOnlineState extends State<DriverOnline> {
   Map<String, dynamic>? pendingRequest;
 
   String driverId = '';
-
-  List<LatLng> _fixedRoutePoints = [];
 
   @override
   void initState() {
@@ -92,18 +88,6 @@ class DriverOnlineState extends State<DriverOnline> {
         setState(() => showPopup = true);
       }
     });
-
-    String activeRouteId = widget.routeId;
-    if (activeRouteId.isEmpty) {
-      try {
-        final routeData = await ApiService.getDriverActiveRoute(driverId);
-        activeRouteId = routeData['route']?['route_id'] ?? '';
-      } catch (e) {
-        debugPrint('Could not fetch active route: $e');
-      }
-    }
-
-    await _loadFixedRoute();
   }
 
   // ── Connect WebSocket ──────────────────────────────────────────────────
@@ -165,19 +149,6 @@ class DriverOnlineState extends State<DriverOnline> {
       }));
     } catch (e) {
       log('Error sending location: $e');
-    }
-  }
-
-  Future<void> _loadFixedRoute() async {
-    try {
-      final coords = await ApiService.getFixedRoute();
-      setState(() {
-        _fixedRoutePoints = coords
-            .map<LatLng>((c) => LatLng(c['lat'], c['lng']))
-            .toList();
-      });
-    } catch (e) {
-      debugPrint('Failed to load fixed route: $e');
     }
   }
 
@@ -280,17 +251,6 @@ class DriverOnlineState extends State<DriverOnline> {
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.autorickshaw',
                     ),
-
-                    if (_fixedRoutePoints.isNotEmpty)
-                      PolylineLayer(
-                        polylines: [
-                          Polyline(
-                            points: _fixedRoutePoints,
-                            color: const Color.fromARGB(255, 254, 187, 38),
-                            strokeWidth: 5,
-                          ),
-                        ],
-                      ),
 
                     // Driver location marker
                     if (driverLocation != null)

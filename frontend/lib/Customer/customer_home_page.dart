@@ -18,8 +18,10 @@ class CustomerHomePage extends StatefulWidget {
 }
 
 class CustomerHomePageState extends State<CustomerHomePage> {
+
   String userName = '';
   String userId = '';
+
   LatLng? _currentLocation;
 
   final MapController _mapController = MapController();
@@ -28,12 +30,13 @@ class CustomerHomePageState extends State<CustomerHomePage> {
   final TextEditingController pickupController = TextEditingController();
   final TextEditingController dropoffController = TextEditingController();
 
+  // final DraggableScrollableController _sheetController = DraggableScrollableController();
+
   List<Map<String, dynamic>> _pickupSuggestions = [];
   List<Map<String, dynamic>> _dropoffSuggestions = [];
   double? _pickupLat, _pickupLng;
   double? _dropoffLat, _dropoffLng;
-  Timer? _debounce;
-  bool _isLoadingLocation = false;
+  Timer? _debounce;  // prevents API call on every single keystroke
 
   @override
   void initState() {
@@ -48,6 +51,7 @@ class CustomerHomePageState extends State<CustomerHomePage> {
       userId = prefs.getString('userId') ?? '';
     });
 
+    // Get real GPS location
     final location = await ApiService.getCurrentLocation();
     if (location != null) {
       setState(() {
@@ -56,28 +60,33 @@ class CustomerHomePageState extends State<CustomerHomePage> {
           location['longitude']!,
         );
       });
+      // Move map to user's real location
       _mapController.move(_currentLocation!, 15);
       await _reverseGeocode(location['latitude']!, location['longitude']!);
     }
   }
 
+  // double _sheetExtent = 0.67;
+
   @override
   void dispose() {
     pickupController.dispose();
     dropoffController.dispose();
-    _debounce?.cancel();
+    // _sheetController.dispose();
     super.dispose();
   }
 
   // ── Search with debounce ──────────────────────────────────────────────────
+  // Waits 500ms after user stops typing before calling API
+  // Prevents too many API calls while user is still typing
   void _onPickupChanged(String value) {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 800), () async {
       if (value.length >= 3) {
         final suggestions = await ApiService.searchAddress(value);
-        if (mounted) setState(() => _pickupSuggestions = suggestions);
+        setState(() => _pickupSuggestions = suggestions);
       } else {
-        if (mounted) setState(() => _pickupSuggestions = []);
+        setState(() => _pickupSuggestions = []);
       }
     });
   }
@@ -87,20 +96,22 @@ class CustomerHomePageState extends State<CustomerHomePage> {
     _debounce = Timer(const Duration(milliseconds: 800), () async {
       if (value.length >= 3) {
         final suggestions = await ApiService.searchAddress(value);
-        if (mounted) setState(() => _dropoffSuggestions = suggestions);
+        setState(() => _dropoffSuggestions = suggestions);
       } else {
-        if (mounted) setState(() => _dropoffSuggestions = []);
+        setState(() => _dropoffSuggestions = []);
       }
     });
   }
 
   // ── Reverse Geocode ───────────────────────────────────────────────────────
+  // Converts GPS coordinates to a human readable address
+  // Called when app gets user's location on startup
   Future<void> _reverseGeocode(double lat, double lng) async {
     try {
       final response = await http.get(
         Uri.parse(
           'https://nominatim.openstreetmap.org/reverse'
-          '?lat=$lat&lon=$lng&format=json',
+          '?lat=$lat&lon=$lng&format=json'
         ),
         headers: {'User-Agent': 'AutoShare/1.0'},
       );
@@ -117,57 +128,31 @@ class CustomerHomePageState extends State<CustomerHomePage> {
         }
       }
     } catch (e) {
-      // Keep coordinates as fallback
-      if (mounted) {
-        setState(() {
-          _pickupLat = lat;
-          _pickupLng = lng;
-        });
-      }
+      _pickupLat = 23.0393;
+      _pickupLng = 72.5129;
     }
   }
 
-  // ── Use Current Location as Pickup ────────────────────────────────────────
-  Future<void> _useCurrentLocation() async {
-    setState(() => _isLoadingLocation = true);
-    try {
-      final location = await ApiService.getCurrentLocation();
-      if (location == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Could not get location. Please enable GPS.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        return;
-      }
-
-      setState(() {
-        _currentLocation = LatLng(
-          location['latitude']!,
-          location['longitude']!,
-        );
-      });
-
-      _mapController.move(_currentLocation!, 15);
-      await _reverseGeocode(location['latitude']!, location['longitude']!);
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Current location set as pickup ✅'),
-          backgroundColor: Colors.green,
-          duration: Duration(seconds: 2),
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _isLoadingLocation = false);
-    }
-  }
+  // String _calculateDistance() {
+  //   if (_pickupLat == null || _dropoffLat == null) return '';
+    
+  //   const Distance distance = Distance();
+  //   final meters = distance(
+  //     LatLng(_pickupLat!, _pickupLng!),
+  //     LatLng(_dropoffLat!, _dropoffLng!),
+  //   );
+    
+  //   if (meters < 1000) {
+  //     return '${meters.toStringAsFixed(0)} m';
+  //   } else {
+  //     return '${(meters / 1000).toStringAsFixed(1)} km';
+  //   }
+  // }
 
   @override
   Widget build(BuildContext context) {
+    // final screenHeight = MediaQuery.of(context).size.height;
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -187,44 +172,89 @@ class CustomerHomePageState extends State<CustomerHomePage> {
         body: SafeArea(
           child: Stack(
             children: [
-              // ── Map background ───────────────────────────────────────
               Positioned.fill(
                 child: FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                    initialCenter: _currentLocation ?? _ahmedabad,
+                    initialCenter: _ahmedabad,
                     initialZoom: 13,
                     minZoom: 10,
                     maxZoom: 18,
                   ),
                   children: [
                     TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.autorickshaw',
                     ),
-                    // Show current location marker on map
-                    if (_currentLocation != null)
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: _currentLocation!,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(
-                              Icons.person_pin_circle,
-                              color: Colors.blue,
-                              size: 40,
-                            ),
-                          ),
-                        ],
-                      ),
+                    // Show markers only when coordinates are selected
+                    // MarkerLayer(
+                    //   markers: [
+                    //     // User's current GPS location
+                    //     if (_currentLocation != null)
+                    //       Marker(
+                    //         point: _currentLocation!,
+                    //         width: 40,
+                    //         height: 40,
+                    //         child: const Icon(
+                    //           Icons.person_pin_circle,
+                    //           color: Colors.blue,
+                    //           size: 40,
+                    //         ),
+                    //       ),
+                    //     // Pickup location marker
+                    //     if (_pickupLat != null && _pickupLng != null)
+                    //       Marker(
+                    //         point: LatLng(_pickupLat!, _pickupLng!),
+                    //         width: 40,
+                    //         height: 40,
+                    //         child: const Icon(
+                    //           Icons.location_on,
+                    //           color: Colors.green,
+                    //           size: 40,
+                    //         ),
+                    //       ),
+                    //     // Dropoff location marker
+                    //     if (_dropoffLat != null && _dropoffLng != null)
+                    //       Marker(
+                    //         point: LatLng(_dropoffLat!, _dropoffLng!),
+                    //         width: 40,
+                    //         height: 40,
+                    //         child: const Icon(
+                    //           Icons.location_on,
+                    //           color: Colors.red,
+                    //           size: 40,
+                    //         ),
+                    //       ),
+                    //   ],
+                    // ),
                   ],
                 ),
               ),
-
-              // ── Bottom sheet ─────────────────────────────────────────
+              // AnimatedPositioned(
+              //   duration: const Duration(milliseconds: 100),
+              //   curve: Curves.easeOut,
+              //   bottom: screenHeight * _sheetExtent + 10,
+              //   right: 20,
+              //   child: FloatingActionButton(
+              //     heroTag: 'customer_home_fab',
+              //     backgroundColor: Colors.white,
+              //     elevation: 4,
+              //     onPressed: () {
+              //       if (_pickupLat != null && _pickupLng != null) {
+              //         // Move to pickup location
+              //         _mapController.move(LatLng(_pickupLat!, _pickupLng!), 14);
+              //       } else if (_currentLocation != null) {
+              //         // Move to current location
+              //         _mapController.move(_currentLocation!, 14);
+              //       } else {
+              //         _mapController.move(_ahmedabad, 14);
+              //       }
+              //     },
+              //     child: const Icon(Icons.my_location, color: Colors.black87),
+              //   ),
+              // ),
               DraggableScrollableSheet(
+                // controller: _sheetController,
                 initialChildSize: 0.67,
                 minChildSize: 0.05,
                 maxChildSize: 0.67,
@@ -243,87 +273,26 @@ class CustomerHomePageState extends State<CustomerHomePage> {
                       child: Padding(
                         padding: const EdgeInsets.all(15),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            // ── Drag handle ──────────────────────────
-                            Center(
-                              child: Container(
-                                height: 5,
-                                width: 40,
-                                margin: const EdgeInsets.only(
-                                    top: 5, bottom: 10),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[300],
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
+                            Container(
+                              height: 5,
+                              width: 40,
+                              margin:
+                                  const EdgeInsets.only(top: 5, bottom: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.grey[300],
+                                borderRadius: BorderRadius.circular(10),
                               ),
                             ),
                             const SizedBox(height: 5),
-                            const Center(
-                              child: Text(
-                                'Select Address',
-                                style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold),
-                              ),
+                            const Text(
+                              'Select Address',
+                              style: TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold),
                             ),
                             const SizedBox(height: 8),
-                            const Divider(
-                                thickness: 1, color: Colors.grey),
-
-                            // ── Pickup label + Use My Location ───────
-                            Row(
-                              mainAxisAlignment:
-                                  MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text(
-                                  'Pickup',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: Colors.grey,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                TextButton.icon(
-                                  onPressed: _isLoadingLocation
-                                      ? null
-                                      : _useCurrentLocation,
-                                  icon: _isLoadingLocation
-                                      ? const SizedBox(
-                                          width: 14,
-                                          height: 14,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Color.fromARGB(
-                                                255, 254, 187, 38),
-                                          ),
-                                        )
-                                      : const Icon(
-                                          Icons.my_location,
-                                          size: 14,
-                                          color: Color.fromARGB(
-                                              255, 254, 187, 38),
-                                        ),
-                                  label: const Text(
-                                    'Use my location',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Color.fromARGB(
-                                          255, 254, 187, 38),
-                                    ),
-                                  ),
-                                  style: TextButton.styleFrom(
-                                    padding: EdgeInsets.zero,
-                                    minimumSize: Size.zero,
-                                    tapTargetSize:
-                                        MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-
-                            // ── Pickup text field ────────────────────
+                            const Divider(thickness: 1, color: Colors.grey),
                             _buildTextField(
                               hint: 'Pickup Location',
                               prefixIcon: const Icon(
@@ -333,38 +302,61 @@ class CustomerHomePageState extends State<CustomerHomePage> {
                               controller: pickupController,
                               onChanged: _onPickupChanged,
                             ),
-
-                            // ── Pickup suggestions ───────────────────
                             if (_pickupSuggestions.isNotEmpty)
-                              _buildSuggestionsList(
-                                suggestions: _pickupSuggestions,
-                                onSelect: (suggestion) {
-                                  setState(() {
-                                    pickupController.text =
-                                        suggestion['display_name'];
-                                    _pickupLat =
-                                        suggestion['lat'] as double;
-                                    _pickupLng =
-                                        suggestion['lng'] as double;
-                                    _pickupSuggestions = [];
-                                  });
-                                },
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black26, blurRadius: 4)
+                                  ],
+                                ),
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: _pickupSuggestions.length,
+                                  itemBuilder: (context, index) {
+                                    final suggestion = _pickupSuggestions[index];
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.location_on, color: Colors.grey),
+                                      title: Text(
+                                        suggestion['short_name'] ?? suggestion['display_name'],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                                      ),
+                                      subtitle: Text(
+                                        suggestion['display_name'],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                      ),
+                                      onTap: () {
+                                        final lat = suggestion['lat'] as double;
+                                        final lng = suggestion['lng'] as double;
+                                        setState(() {
+                                          pickupController.text = suggestion['display_name'];
+                                          _pickupLat = lat;
+                                          _pickupLng = lng;
+                                          _pickupSuggestions = [];  // hide suggestions
+                                        });
+
+                                        // Move map to selected location
+                                        // WidgetsBinding.instance.addPostFrameCallback((_) {
+                                        //   _mapController.move(LatLng(lat, lng), 15);
+                                        //   _sheetController.animateTo(
+                                        //     0.15,
+                                        //     duration: const Duration(milliseconds: 300),
+                                        //     curve: Curves.easeOut,
+                                        //   );
+                                        // });
+                                      },
+                                    );
+                                  },
+                                ),
                               ),
-
-                            const SizedBox(height: 12),
-
-                            // ── Dropoff label ────────────────────────
-                            const Text(
-                              'Dropoff',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-
-                            // ── Dropoff text field ───────────────────
+                            const SizedBox(height: 8),
                             _buildTextField(
                               hint: 'Dropoff Destination',
                               prefixIcon: const Icon(
@@ -374,78 +366,100 @@ class CustomerHomePageState extends State<CustomerHomePage> {
                               controller: dropoffController,
                               onChanged: _onDropoffChanged,
                             ),
-
-                            // ── Dropoff suggestions ──────────────────
                             if (_dropoffSuggestions.isNotEmpty)
-                              _buildSuggestionsList(
-                                suggestions: _dropoffSuggestions,
-                                onSelect: (suggestion) {
-                                  setState(() {
-                                    dropoffController.text =
-                                        suggestion['display_name'];
-                                    _dropoffLat =
-                                        suggestion['lat'] as double;
-                                    _dropoffLng =
-                                        suggestion['lng'] as double;
-                                    _dropoffSuggestions = [];
-                                  });
-                                },
-                              ),
-
-                            const SizedBox(height: 12),
-                            const Divider(
-                                thickness: 1, color: Colors.grey),
-
-                            // ── Next button ──────────────────────────
-                            SizedBox(
-                              width: double.infinity,
-                              child: ElevatedButton(
-                                onPressed:
-                                    (_pickupLat != null &&
-                                            _dropoffLat != null)
-                                        ? () {
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) =>
-                                                    ConfirmRideScreen(
-                                                  pickupLat: _pickupLat!,
-                                                  pickupLng: _pickupLng!,
-                                                  pickupAddress:
-                                                      pickupController
-                                                          .text,
-                                                  dropoffLat: _dropoffLat!,
-                                                  dropoffLng: _dropoffLng!,
-                                                  dropoffAddress:
-                                                      dropoffController
-                                                          .text,
-                                                  userId: userId,
-                                                ),
-                                              ),
-                                            );
-                                          }
-                                        : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color.fromARGB(
-                                      255, 254, 187, 38),
-                                  foregroundColor: Colors.black,
-                                  disabledBackgroundColor:
-                                      Colors.grey.shade300,
-                                  minimumSize:
-                                      const Size.fromHeight(50),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius:
-                                        BorderRadius.circular(12),
-                                  ),
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black26, blurRadius: 4)
+                                  ],
                                 ),
-                                child: const Text(
-                                  'Next',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: _dropoffSuggestions.length,
+                                  itemBuilder: (context, index) {
+                                    final suggestion = _dropoffSuggestions[index];
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.location_on, color: Colors.grey),
+                                      title: Text(
+                                        suggestion['short_name'] ?? suggestion['display_name'],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                                      ),
+                                      subtitle: Text(
+                                        suggestion['display_name'],
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                      ),
+                                      onTap: () {
+                                        final lat = suggestion['lat'] as double;
+                                        final lng = suggestion['lng'] as double;
+                                        setState(() {
+                                          dropoffController.text = suggestion['display_name'];
+                                          _dropoffLat = lat;
+                                          _dropoffLng = lng;
+                                          _dropoffSuggestions = [];
+                                        });
+                                        // WidgetsBinding.instance.addPostFrameCallback((_) {
+                                        //   _mapController.move(LatLng(lat, lng), 13);
+                                        //   _sheetController.animateTo(
+                                        //     0.15,
+                                        //     duration: const Duration(milliseconds: 300),
+                                        //     curve: Curves.easeOut,
+                                        //   );
+                                        // });
+                                      },
+                                    );
+                                  },
                                 ),
                               ),
+                            const SizedBox(height: 8),
+                            // if (_pickupLat != null && _dropoffLat != null)
+                            //   Padding(
+                            //     padding: const EdgeInsets.symmetric(vertical: 8),
+                            //     child: Row(
+                            //       mainAxisAlignment: MainAxisAlignment.center,
+                            //       children: [
+                            //         const Icon(Icons.straighten, size: 16, color: Colors.grey),
+                            //         const SizedBox(width: 4),
+                            //         Text(
+                            //           'Distance: ${_calculateDistance()}',
+                            //           style: const TextStyle(
+                            //             fontSize: 14,
+                            //             fontWeight: FontWeight.w500,
+                            //             color: Colors.grey,
+                            //           ),
+                            //         ),
+                            //       ],
+                            //     ),
+                            //   ),
+                            const Divider(thickness: 1, color: Colors.grey),
+                            ElevatedButton(
+                              // Only enable if both locations selected with real coordinates
+                              onPressed: (_pickupLat != null && _dropoffLat != null)
+                                  ? () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => ConfirmRideScreen(
+                                            pickupLat: _pickupLat!,
+                                            pickupLng: _pickupLng!,
+                                            pickupAddress: pickupController.text,
+                                            dropoffLat: _dropoffLat!,
+                                            dropoffLng: _dropoffLng!,
+                                            dropoffAddress: dropoffController.text,
+                                            userId: userId,
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  : null,  // disabled until real location selected
+                              child: const Text('Next'),
                             ),
                           ],
                         ),
@@ -461,53 +475,6 @@ class CustomerHomePageState extends State<CustomerHomePage> {
     );
   }
 
-  // ── Reusable suggestions list ─────────────────────────────────────────────
-  Widget _buildSuggestionsList({
-    required List<Map<String, dynamic>> suggestions,
-    required Function(Map<String, dynamic>) onSelect,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(top: 4),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 4),
-        ],
-      ),
-      child: ListView.separated(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: suggestions.length,
-        separatorBuilder: (_, __) =>
-            const Divider(height: 1, color: Colors.grey),
-        itemBuilder: (context, index) {
-          final suggestion = suggestions[index];
-          return ListTile(
-            dense: true,
-            leading:
-                const Icon(Icons.location_on, color: Colors.grey, size: 18),
-            title: Text(
-              suggestion['short_name'] ?? suggestion['display_name'],
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w500),
-            ),
-            subtitle: Text(
-              suggestion['display_name'],
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-            onTap: () => onSelect(suggestion),
-          );
-        },
-      ),
-    );
-  }
-
-  // ── Text field builder ────────────────────────────────────────────────────
   Widget _buildTextField({
     required String hint,
     required Widget prefixIcon,
@@ -532,8 +499,7 @@ class CustomerHomePageState extends State<CustomerHomePage> {
             fillColor: Colors.white,
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(50),
-              borderSide:
-                  const BorderSide(color: Colors.grey, width: 1.5),
+              borderSide: const BorderSide(color: Colors.grey, width: 1.5),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(50),

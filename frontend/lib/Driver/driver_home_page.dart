@@ -3,7 +3,6 @@ import 'package:autoshare/General/plan_your_ride.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:autoshare/services/api_service.dart';
-import 'package:autoshare/Driver/route_selection_screen.dart';
 
 class DriverHomePage extends StatefulWidget {
   const DriverHomePage({super.key});
@@ -109,7 +108,13 @@ class DriverHomePageState extends State<DriverHomePage> {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => const RouteSelectionScreen(),
+                                    builder: (_) => const PlanYourRide(
+                                      pickupLocation: '',
+                                      dropoffLocation: '',
+                                      userType: 'driver',
+                                      buttonText: 'Go for Ride',
+                                      distance: '',
+                                    ),
                                   ),
                                 );
                               },
