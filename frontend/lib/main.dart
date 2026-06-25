@@ -7,6 +7,7 @@ import 'package:autoshare/Login&Signup/login_page.dart';
 import 'package:autoshare/Customer/customer_home_page.dart';
 import 'package:autoshare/Driver/driver_home_page.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,13 +49,20 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _navigateAfterDelay();
+    _requestPermissionsAndNavigate();
+  }
+
+  Future<void> _requestPermissionsAndNavigate() async {
+    // Request location permission immediately on app start
+    // This triggers the Android permission dialog
+    await Permission.location.request();
+    await _navigateAfterDelay();
   }
 
   Future<void> _navigateAfterDelay() async {
     try {
-    await http.get(Uri.parse(AppConfig.apiBaseUrl));
-  } catch (_) {}
+      await http.get(Uri.parse(AppConfig.apiBaseUrl));
+    } catch (_) {}
   
     await Future.delayed(const Duration(seconds: 1));
 
