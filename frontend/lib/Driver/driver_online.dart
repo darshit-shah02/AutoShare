@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -65,7 +66,7 @@ class DriverOnlineState extends State<DriverOnline> {
     final prefs = await SharedPreferences.getInstance();
     driverId = prefs.getString('userId') ?? '';
 
-    // Get initial GPS location
+    // Get GPS location first
     final location = await ApiService.getCurrentLocation();
     if (location != null && mounted) {
       setState(() {
@@ -77,33 +78,17 @@ class DriverOnlineState extends State<DriverOnline> {
       _mapController.move(driverLocation!, 15);
     }
 
-    // Connect to WebSocket
+    // Load fixed route — uses routeId from widget
+    await _loadFixedRoute();
+
+    // Connect WebSocket
     _connectWebSocket();
 
-    // Send GPS location every 3 seconds
-    _locationTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      _sendLocation();
-    });
-
-    // Simulate incoming ride request after 10 seconds
-    // This will be replaced with real WebSocket notification later
-    Timer(const Duration(seconds: 10), () {
-      if (mounted) {
-        setState(() => showPopup = true);
-      }
-    });
-
-    String activeRouteId = widget.routeId;
-    if (activeRouteId.isEmpty) {
-      try {
-        final routeData = await ApiService.getDriverActiveRoute(driverId);
-        activeRouteId = routeData['route']?['route_id'] ?? '';
-      } catch (e) {
-        debugPrint('Could not fetch active route: $e');
-      }
-    }
-
-    await _loadFixedRoute();
+    // Start sending GPS every 3 seconds
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _sendLocation(),
+    );
   }
 
   // ── Connect WebSocket ──────────────────────────────────────────────────
@@ -168,14 +153,35 @@ class DriverOnlineState extends State<DriverOnline> {
     }
   }
 
+  // Update _loadFixedRoute to use routeId
   Future<void> _loadFixedRoute() async {
     try {
-      final coords = await ApiService.getFixedRoute();
-      setState(() {
-        _fixedRoutePoints = coords
-            .map<LatLng>((c) => LatLng(c['lat'], c['lng']))
-            .toList();
-      });
+      // Use the routeId passed from route selection screen
+      final token = await ApiService.getToken();
+      final response = await http.get(
+        Uri.parse(
+          '${ApiService.baseUrl}/rides/fixed-route?route_id=${widget.routeId}'
+        ),
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final List coords = data['coordinates'];
+        setState(() {
+          _fixedRoutePoints = coords
+              .map<LatLng>((c) => LatLng(c['lat'], c['lng']))
+              .toList();
+        });
+
+        // Move map to show full route
+        if (_fixedRoutePoints.isNotEmpty) {
+          _mapController.move(_fixedRoutePoints.first, 13);
+        }
+      }
     } catch (e) {
       debugPrint('Failed to load fixed route: $e');
     }

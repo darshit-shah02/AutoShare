@@ -266,13 +266,20 @@ def submit_rating(ride_id: str, data: dict):
     return {"message": "Rating submitted successfully"}
 
 # ── Get Fixed Route Coordinates ────────────────────────────────────────────
-# Returns the fixed auto route as a list of lat/lng coordinates
-# Used by driver screen to display the route on map
-# Also used by customer to find nearest point on route
+# Now accepts optional route_id parameter
+# If route_id provided → fetch that specific route
+# If not → fetch first available route (fallback)
 
 @router.get("/fixed-route")
-def get_fixed_route():
-    result = supabase.rpc("get_fixed_route_coordinates").execute()
+def get_fixed_route(route_id: str = None):
+    if route_id:
+        # Fetch specific route by ID
+        result = supabase.rpc("get_fixed_route_coordinates_by_id", {
+            "route_id_input": route_id
+        }).execute()
+    else:
+        # Fallback — fetch first available route
+        result = supabase.rpc("get_fixed_route_coordinates").execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="No fixed route found")
