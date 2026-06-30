@@ -443,7 +443,14 @@ class ApiService {
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
-      return List<Map<String, dynamic>>.from(data['coordinates']);
+      var coords = data['coordinates'];
+
+      // Handle nested list from Supabase RPC
+      if (coords is List && coords.isNotEmpty && coords[0] is List) {
+        coords = coords[0];
+      }
+
+      return List<Map<String, dynamic>>.from(coords);
     }
     return [];
   }

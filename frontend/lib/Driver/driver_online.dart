@@ -65,9 +65,12 @@ class DriverOnlineState extends State<DriverOnline> {
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
     driverId = prefs.getString('userId') ?? '';
+    print('Driver ID: $driverId');           // ← ADD
+    print('Route ID: ${widget.routeId}');    // ← ADD
 
-    // Get GPS location first
     final location = await ApiService.getCurrentLocation();
+    print('Location: $location');            // ← ADD
+
     if (location != null && mounted) {
       setState(() {
         driverLocation = LatLng(
@@ -78,13 +81,8 @@ class DriverOnlineState extends State<DriverOnline> {
       _mapController.move(driverLocation!, 15);
     }
 
-    // Load fixed route — uses routeId from widget
     await _loadFixedRoute();
-
-    // Connect WebSocket
     _connectWebSocket();
-
-    // Start sending GPS every 3 seconds
     _locationTimer = Timer.periodic(
       const Duration(seconds: 3),
       (_) => _sendLocation(),
@@ -156,34 +154,46 @@ class DriverOnlineState extends State<DriverOnline> {
   // Update _loadFixedRoute to use routeId
   Future<void> _loadFixedRoute() async {
     try {
-      // Use the routeId passed from route selection screen
       final token = await ApiService.getToken();
+      final url = '${ApiService.baseUrl}/rides/fixed-route?route_id=${widget.routeId}';
+      print('Fetching route from: $url');  // ← ADD
+
       final response = await http.get(
-        Uri.parse(
-          '${ApiService.baseUrl}/rides/fixed-route?route_id=${widget.routeId}'
-        ),
+        Uri.parse(url),
         headers: {
           'Content-Type': 'application/json',
           if (token != null) 'Authorization': 'Bearer $token',
         },
       );
 
+      print('Route status: ${response.statusCode}');  // ← ADD
+      print('Route body: ${response.body}');           // ← ADD
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final List coords = data['coordinates'];
+        final rawCoords = data['coordinates'];  // ← rename to rawCoords
+
+        // Handle nested list
+        final List coordsList = (rawCoords is List &&
+            rawCoords.isNotEmpty &&
+            rawCoords[0] is List)
+            ? rawCoords[0] as List
+            : rawCoords as List;
+
+        print('Actual coords count: ${coordsList.length}');
+
         setState(() {
-          _fixedRoutePoints = coords
-              .map<LatLng>((c) => LatLng(c['lat'], c['lng']))
+          _fixedRoutePoints = coordsList
+              .map<LatLng>((c) => LatLng(c['lat'] as double, c['lng'] as double))
               .toList();
         });
 
-        // Move map to show full route
         if (_fixedRoutePoints.isNotEmpty) {
           _mapController.move(_fixedRoutePoints.first, 13);
         }
       }
     } catch (e) {
-      debugPrint('Failed to load fixed route: $e');
+      print('Route load error: $e');  // ← ADD
     }
   }
 
