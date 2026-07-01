@@ -72,7 +72,7 @@ def get_nearby_autos(
             "phone": driver["phone"],
             "vehicle_number": driver["vehicle_number"],
             "rating": float(driver["rating"]),
-            "distance_meters": round(distance, 0),
+            "distance_meters": round(float(driver["distance_meters"]), 0),
             "fare": fare,
             "latitude": driver["latitude"],
             "longitude": driver["longitude"],
