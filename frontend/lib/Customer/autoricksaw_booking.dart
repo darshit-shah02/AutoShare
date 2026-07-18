@@ -10,7 +10,6 @@ import '../General/cancel_ride.dart';
 import '../General/exit_pop_up.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'dart:async';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AutoricksawBooking extends StatefulWidget {
   final String cost;
@@ -65,6 +64,7 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
 
   WebSocketChannel? _customerChannel;
   Timer? _locationPollTimer;
+  Timer? _customerLocationTimer;
 
   @override
   void initState() {
@@ -110,6 +110,23 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
     setState(() => isLoadingPath = false);
 
     _connectToDriverLocation();
+    _startSendingCustomerLocation();
+  }
+
+  void _startSendingCustomerLocation() {
+    _customerLocationTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) async {
+        final location = await ApiService.getCurrentLocation();
+        if (location != null) {
+          await ApiService.updateCustomerLocation(
+            rideId: widget.rideId,
+            lat: location['latitude']!,
+            lng: location['longitude']!,
+          );
+        }
+      },
+    );
   }
 
   // ── Fetch walking paths from OSRM via our backend ─────────────────────
@@ -196,6 +213,7 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
   // Clean up timer in dispose
   @override
   void dispose() {
+    _customerLocationTimer?.cancel();
     _locationPollTimer?.cancel();
     _customerChannel?.sink.close();
     super.dispose();
@@ -316,7 +334,6 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
                           points: walkingPathToPickup,
                           color: Colors.blue,
                           strokeWidth: 4,
-                          pattern: StrokePattern.dotted(),
                         ),
                        ],
                     ),
