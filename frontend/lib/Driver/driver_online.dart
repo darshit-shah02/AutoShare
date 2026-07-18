@@ -28,28 +28,22 @@ class DriverOnline extends StatefulWidget {
 class DriverOnlineState extends State<DriverOnline> {
   final MapController _mapController = MapController();
 
-  // Driver's current location — updated from real GPS
   LatLng? driverLocation;
-
-  // Route points to draw on map
-  List<LatLng> routePoints = [];
-
-  // WebSocket channel for sending location to server
+  List<LatLng> _fixedRoutePoints = [];
   WebSocketChannel? _channel;
-
-  // Timer that sends GPS every 3 seconds
   Timer? _locationTimer;
+  Timer? _requestPollTimer;     // polls for ride requests as backup
+  Timer? _customerLocationTimer;
 
-  // Active ride ID — null if no passenger
   String? activeRideId;
-
-  // Passenger request popup
   bool showPopup = false;
   Map<String, dynamic>? pendingRequest;
-
+  LatLng? customerLocation;
   String driverId = '';
 
-  List<LatLng> _fixedRoutePoints = [];
+  // Track which ride requests we've already shown
+  // Prevents showing same popup repeatedly
+  final Set<String> _shownRequestIds = {};
 
   @override
   void initState() {
@@ -57,20 +51,11 @@ class DriverOnlineState extends State<DriverOnline> {
     _initialize();
   }
 
-  // ── Initialize ─────────────────────────────────────────────────────────
-  // 1. Load driver ID from SharedPreferences
-  // 2. Get real GPS location
-  // 3. Connect to WebSocket
-  // 4. Start sending GPS every 3 seconds
   Future<void> _initialize() async {
     final prefs = await SharedPreferences.getInstance();
     driverId = prefs.getString('userId') ?? '';
-    print('Driver ID: $driverId');           // ← ADD
-    print('Route ID: ${widget.routeId}');    // ← ADD
 
     final location = await ApiService.getCurrentLocation();
-    print('Location: $location');            // ← ADD
-
     if (location != null && mounted) {
       setState(() {
         driverLocation = LatLng(
@@ -83,33 +68,34 @@ class DriverOnlineState extends State<DriverOnline> {
 
     await _loadFixedRoute();
     _connectWebSocket();
+
+    // Send GPS every 3 seconds
     _locationTimer = Timer.periodic(
       const Duration(seconds: 3),
       (_) => _sendLocation(),
     );
+
+    // Poll for ride requests every 3 seconds (backup to WebSocket)
+    _requestPollTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _pollForRideRequests(),
+    );
   }
 
-  // ── Connect WebSocket ──────────────────────────────────────────────────
-  // Opens WebSocket connection to backend
-  // Backend marks driver as online in database
+  // ── WebSocket connection ───────────────────────────────────────────────
   void _connectWebSocket() {
     if (driverId.isEmpty) return;
 
     _channel = ApiService.connectDriverWebSocket(driverId);
 
-    // Listen for any messages from server (e.g. ride requests)
     _channel!.stream.listen(
       (data) {
         final message = jsonDecode(data);
         if (message['type'] == 'ride_request') {
-          setState(() {
-            showPopup = true;
-            pendingRequest = message;
-          });
+          _showRideRequest(message);
         }
       },
       onDone: () {
-        // WebSocket closed — try to reconnect
         log('WebSocket closed, reconnecting...');
         Future.delayed(const Duration(seconds: 3), _connectWebSocket);
       },
@@ -119,44 +105,84 @@ class DriverOnlineState extends State<DriverOnline> {
     );
   }
 
-  // ── Send GPS location to server ────────────────────────────────────────
-  // Called every 3 seconds by the timer
-  // Sends current GPS coordinates + active ride ID if any
-  Future<void> _sendLocation() async {
-    if (_channel == null || driverId.isEmpty) return;
+  // ── Poll for ride requests (backup to WebSocket) ───────────────────────
+  // This ensures driver gets requests even if WebSocket disconnects
+  // Checks database directly every 3 seconds
+  Future<void> _pollForRideRequests() async {
+    if (driverId.isEmpty || showPopup || activeRideId != null) return;
 
-    // Get fresh GPS reading
+    try {
+      final request = await ApiService.getPendingRequest(driverId);
+      if (request != null) {
+        _showRideRequest(request);
+      }
+    } catch (e) {
+      // Silent fail — will retry in 3 seconds
+    }
+  }
+
+  // ── Show ride request popup ────────────────────────────────────────────
+  // Called by both WebSocket and polling
+  // Uses _shownRequestIds to prevent duplicate popups
+  void _showRideRequest(Map<String, dynamic> request) {
+    final rideId = request['ride_id'];
+    if (rideId == null || _shownRequestIds.contains(rideId)) return;
+
+    _shownRequestIds.add(rideId);
+    if (mounted) {
+      setState(() {
+        showPopup = true;
+        pendingRequest = request;
+      });
+    }
+  }
+
+  // ── Send GPS location ──────────────────────────────────────────────────
+  Future<void> _sendLocation() async {
+    if (driverId.isEmpty) return;
+
     final location = await ApiService.getCurrentLocation();
     if (location == null) return;
 
     final lat = location['latitude']!;
     final lng = location['longitude']!;
 
-    // Update marker on map
     if (mounted) {
       setState(() {
         driverLocation = LatLng(lat, lng);
       });
     }
 
-    // Send to WebSocket server
+    // Send via WebSocket if connected
     try {
-      _channel!.sink.add(jsonEncode({
+      _channel?.sink.add(jsonEncode({
         "latitude": lat,
         "longitude": lng,
-        "ride_id": activeRideId,  // null if no active ride
+        "ride_id": activeRideId,
       }));
     } catch (e) {
-      log('Error sending location: $e');
+      // WebSocket failed — also update via HTTP as backup
+      try {
+        final headers = await ApiService.authHeaders();
+        await http.post(
+          Uri.parse('${ApiService.baseUrl}/drivers/location'),
+          headers: headers,
+          body: jsonEncode({
+            'driver_id': driverId,
+            'latitude': lat,
+            'longitude': lng,
+          }),
+        );
+      } catch (_) {}
     }
   }
 
-  // Update _loadFixedRoute to use routeId
+  // ── Load fixed route ───────────────────────────────────────────────────
   Future<void> _loadFixedRoute() async {
     try {
       final token = await ApiService.getToken();
-      final url = '${ApiService.baseUrl}/rides/fixed-route?route_id=${widget.routeId}';
-      print('Fetching route from: $url');  // ← ADD
+      final url =
+          '${ApiService.baseUrl}/rides/fixed-route?route_id=${widget.routeId}';
 
       final response = await http.get(
         Uri.parse(url),
@@ -166,43 +192,106 @@ class DriverOnlineState extends State<DriverOnline> {
         },
       );
 
-      print('Route status: ${response.statusCode}');  // ← ADD
-      print('Route body: ${response.body}');           // ← ADD
-
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final rawCoords = data['coordinates'];  // ← rename to rawCoords
+        final rawCoords = data['coordinates'];
 
-        // Handle nested list
         final List coordsList = (rawCoords is List &&
-            rawCoords.isNotEmpty &&
-            rawCoords[0] is List)
+                rawCoords.isNotEmpty &&
+                rawCoords[0] is List)
             ? rawCoords[0] as List
             : rawCoords as List;
 
-        print('Actual coords count: ${coordsList.length}');
+        if (mounted) {
+          setState(() {
+            _fixedRoutePoints = coordsList
+                .map<LatLng>(
+                    (c) => LatLng(c['lat'] as double, c['lng'] as double))
+                .toList();
+          });
 
-        setState(() {
-          _fixedRoutePoints = coordsList
-              .map<LatLng>((c) => LatLng(c['lat'] as double, c['lng'] as double))
-              .toList();
-        });
-
-        if (_fixedRoutePoints.isNotEmpty) {
-          _mapController.move(_fixedRoutePoints.first, 13);
+          if (_fixedRoutePoints.isNotEmpty) {
+            _mapController.move(_fixedRoutePoints.first, 13);
+          }
         }
       }
     } catch (e) {
-      print('Route load error: $e');  // ← ADD
+      log('Route load error: $e');
     }
+  }
+
+  // ── Accept ride ────────────────────────────────────────────────────────
+  void _acceptRide() {
+    if (pendingRequest == null) return;
+
+    final rideId = pendingRequest!['ride_id'];
+    setState(() {
+      showPopup = false;
+      activeRideId = rideId;
+    });
+
+    ApiService.updateRideStatus(
+      rideId: rideId,
+      status: 'accepted',
+    );
+
+    _startCustomerLocationTracking(rideId);
+  }
+
+  // ── Track customer location ────────────────────────────────────────────
+  void _startCustomerLocationTracking(String rideId) {
+    _customerLocationTimer?.cancel();
+    _customerLocationTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) async {
+        try {
+          final location = await ApiService.getCustomerLocation(rideId);
+          if (location != null && mounted) {
+            setState(() {
+              customerLocation = LatLng(
+                location['latitude'],
+                location['longitude'],
+              );
+            });
+          }
+        } catch (e) {
+          debugPrint('Customer location error: $e');
+        }
+      },
+    );
   }
 
   @override
   void dispose() {
-    // Clean up when driver leaves the screen
     _locationTimer?.cancel();
+    _requestPollTimer?.cancel();
+    _customerLocationTimer?.cancel();
     _channel?.sink.close();
     super.dispose();
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────
+  Widget _statItem({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Column(
+      children: [
+        Icon(icon, color: const Color.fromARGB(255, 254, 187, 38), size: 20),
+        const SizedBox(height: 4),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Text(value,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+
+  String _formatDistance(dynamic meters) {
+    if (meters == null) return '0 m';
+    final m = double.tryParse(meters.toString()) ?? 0;
+    if (m < 1000) return '${m.toStringAsFixed(0)} m';
+    return '${(m / 1000).toStringAsFixed(1)} km';
   }
 
   @override
@@ -226,9 +315,9 @@ class DriverOnlineState extends State<DriverOnline> {
       ),
       body: Stack(
         children: [
-          // ── Trip info header ─────────────────────────────────────────
           Column(
             children: [
+              // ── Trip info header ─────────────────────────────────────
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
@@ -267,15 +356,37 @@ class DriverOnlineState extends State<DriverOnline> {
                             ],
                           ),
                         ),
-                        // Show live GPS coords
                         if (driverLocation != null)
                           Text(
                             '📍 ${driverLocation!.latitude.toStringAsFixed(4)}, '
                             '${driverLocation!.longitude.toStringAsFixed(4)}',
-                            style: const TextStyle(fontSize: 12),
+                            style: const TextStyle(fontSize: 11),
                           ),
                       ],
                     ),
+                    // Show active ride indicator
+                    if (activeRideId != null)
+                      Container(
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.circle, color: Colors.green, size: 10),
+                            SizedBox(width: 4),
+                            Text('Ride Active',
+                                style: TextStyle(
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12)),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -285,7 +396,8 @@ class DriverOnlineState extends State<DriverOnline> {
                 child: FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                    initialCenter: driverLocation ?? LatLng(23.0393, 72.5129),
+                    initialCenter:
+                        driverLocation ?? const LatLng(23.0393, 72.5129),
                     initialZoom: 15,
                     minZoom: 12,
                     maxZoom: 18,
@@ -297,6 +409,7 @@ class DriverOnlineState extends State<DriverOnline> {
                       userAgentPackageName: 'com.example.autorickshaw',
                     ),
 
+                    // Fixed route polyline
                     if (_fixedRoutePoints.isNotEmpty)
                       PolylineLayer(
                         polylines: [
@@ -308,10 +421,11 @@ class DriverOnlineState extends State<DriverOnline> {
                         ],
                       ),
 
-                    // Driver location marker
-                    if (driverLocation != null)
-                      MarkerLayer(
-                        markers: [
+                    // Markers
+                    MarkerLayer(
+                      markers: [
+                        // Driver location
+                        if (driverLocation != null)
                           Marker(
                             point: driverLocation!,
                             width: 50,
@@ -322,8 +436,21 @@ class DriverOnlineState extends State<DriverOnline> {
                               height: 50,
                             ),
                           ),
-                        ],
-                      ),
+
+                        // Customer location (after accepting)
+                        if (customerLocation != null)
+                          Marker(
+                            point: customerLocation!,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.person_pin_circle,
+                              color: Colors.blue,
+                              size: 40,
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -331,109 +458,186 @@ class DriverOnlineState extends State<DriverOnline> {
           ),
 
           // ── Ride request popup ───────────────────────────────────────
-          // Shows when a customer books this driver
-          if (showPopup)
+          if (showPopup && pendingRequest != null)
             Positioned(
-              bottom: size.height * 0.1,
-              left: size.width * 0.1,
-              right: size.width * 0.1,
+              bottom: size.height * 0.05,
+              left: 16,
+              right: 16,
               child: Container(
                 decoration: BoxDecoration(
-                  color: const Color.fromARGB(255, 254, 187, 38),
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 8)
+                  ],
                 ),
-                child: Stack(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Padding(
+                    // Header
+                    Container(
                       padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
+                      decoration: const BoxDecoration(
+                        color: Color.fromARGB(255, 254, 187, 38),
+                        borderRadius: BorderRadius.only(
+                          topLeft: Radius.circular(16),
+                          topRight: Radius.circular(16),
+                        ),
+                      ),
+                      child: Row(
                         children: [
-                          Text(
-                            "From: ${pendingRequest?['pickup_address'] ?? 'Thaltej'}",
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w500),
-                          ),
-                          Text(
-                            "To: ${pendingRequest?['dropoff_address'] ?? 'Gota'}",
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w500),
-                          ),
-                          Text(
-                            "Fare: ₹${pendingRequest?['fare'] ?? '10'}",
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w500),
-                          ),
+                          const Icon(Icons.electric_rickshaw,
+                              color: Colors.black),
+                          const SizedBox(width: 8),
                           const Text(
-                            "Pickup: ~2 min away",
+                            'New Ride Request!',
                             style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.w500),
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                            ),
                           ),
-                          const SizedBox(height: 20),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              // Accept button
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(5),
-                                  ),
-                                ),
-                                onPressed: () {
-                                  setState(() {
-                                    showPopup = false;
-                                    // Set active ride ID so location
-                                    // gets forwarded to customer
-                                    activeRideId =
-                                        pendingRequest?['ride_id'];
-                                  });
-                                  // Update ride status in database
-                                  if (pendingRequest?['ride_id'] != null) {
-                                    ApiService.updateRideStatus(
-                                      rideId: pendingRequest!['ride_id'],
-                                      status: 'accepted',
-                                    );
-                                  }
-                                },
-                                child: const Text('Accept',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w500)),
-                              ),
-
-                              // Reject button
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.red,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(5),
-                                  ),
-                                ),
-                                onPressed: () {
-                                  setState(() => showPopup = false);
-                                },
-                                child: const Text('Reject',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w500)),
-                              ),
-                            ],
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: () => setState(() => showPopup = false),
+                            child:
+                                const Icon(Icons.close, color: Colors.black),
                           ),
                         ],
                       ),
                     ),
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: GestureDetector(
-                        onTap: () => setState(() => showPopup = false),
-                        child: const Icon(Icons.close,
-                            color: Colors.white, size: 24),
+
+                    // Details
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        children: [
+                          // Pickup
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.circle,
+                                  color: Colors.green, size: 12),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Pickup',
+                                        style: TextStyle(
+                                            fontSize: 11, color: Colors.grey)),
+                                    Text(
+                                      pendingRequest!['pickup_address'] ?? '',
+                                      style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+
+                          // Dropoff
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(Icons.location_on,
+                                  color: Colors.red, size: 12),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Dropoff',
+                                        style: TextStyle(
+                                            fontSize: 11, color: Colors.grey)),
+                                    Text(
+                                      pendingRequest!['dropoff_address'] ?? '',
+                                      style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          const Divider(height: 20),
+
+                          // Stats
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _statItem(
+                                icon: Icons.straighten,
+                                label: 'Ride Distance',
+                                value: _formatDistance(
+                                    pendingRequest!['distance_meters']),
+                              ),
+                              _statItem(
+                                icon: Icons.currency_rupee,
+                                label: 'Fare',
+                                // ✅ Safe conversion — no toStringAsFixed on dynamic
+                                value:
+                                    '₹${(pendingRequest!['fare'] ?? 0).toString()}',
+                              ),
+                            ],
+                          ),
+
+                          const SizedBox(height: 16),
+
+                          // Buttons
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                  ),
+                                  onPressed: _acceptRide,
+                                  child: const Text('Accept',
+                                      style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: OutlinedButton(
+                                  style: OutlinedButton.styleFrom(
+                                    side:
+                                        const BorderSide(color: Colors.red),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 12),
+                                  ),
+                                  onPressed: () =>
+                                      setState(() => showPopup = false),
+                                  child: const Text('Reject',
+                                      style: TextStyle(
+                                          color: Colors.red,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
                   ],

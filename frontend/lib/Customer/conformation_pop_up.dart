@@ -1,6 +1,7 @@
 import 'package:autoshare/Customer/autoricksaw_booking.dart';
 import 'package:autoshare/services/api_service.dart';
 import 'package:flutter/material.dart';
+import 'package:autoshare/Customer/waiting_for_driver_screen.dart';
 
 Future<void> handleConfirmResult(
   BuildContext context,
@@ -71,16 +72,17 @@ Future<void> handleConfirmResult(
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => AutoricksawBooking(
-              cost: cost,
-              driverPhoneNo: driverPhoneNo,
-              driverName: driverName,
-              vehicalNo: vehicalNo,
-              fare: fare,
+            builder: (_) => WaitingForDriverScreen(
               rideId: rideData['ride_id'],
-              driverId: driverId,
-              pickupNearestPoint: rideData['pickup_nearest_point'],
-              dropoffNearestPoint: rideData['dropoff_nearest_point'],
+              fare: fare,
+              pickupLat: pickupLat,
+              pickupLng: pickupLng,
+              dropoffLat: dropoffLat,
+              dropoffLng: dropoffLng,
+              pickupAddress: pickupAddress,
+              dropoffAddress: dropoffAddress,
+              pickupNearestPoint: rideData['pickup_nearest_point'] ?? {},
+              dropoffNearestPoint: rideData['dropoff_nearest_point'] ?? {},
             ),
           ),
         );

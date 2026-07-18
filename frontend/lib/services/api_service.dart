@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:geolocator/geolocator.dart';
 import 'dart:async';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter/foundation.dart';
 
 class ApiService {
   // Change this to your FastAPI URL
@@ -35,7 +36,7 @@ class ApiService {
 
   // ── Auth headers ───────────────────────────────────────────────────────────
   // Attaches JWT token to every request that needs authentication
-  static Future<Map<String, String>> _authHeaders() async {
+  static Future<Map<String, String>> authHeaders() async {
     final token = await getToken();
     return {
       'Content-Type': 'application/json',
@@ -140,7 +141,7 @@ class ApiService {
   // Fetches driver's rating, total trips and earnings from the backend
   // Called when driver home page loads
   static Future<Map<String, dynamic>> getDriverStats(String driverId) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.get(
       Uri.parse('$baseUrl/drivers/stats/$driverId'),
       headers: headers,
@@ -162,7 +163,7 @@ class ApiService {
     required double dropoffLat,
     required double dropoffLng,
   }) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.get(
       Uri.parse(
         '$baseUrl/rides/nearby-autos'
@@ -170,7 +171,7 @@ class ApiService {
         '&dropoff_lat=$dropoffLat&dropoff_lng=$dropoffLng'
       ),
       headers: headers,
-    );
+    ).timeout(const Duration(seconds: 30));
 
     if (response.statusCode == 200) {
       final List data = jsonDecode(response.body);
@@ -193,7 +194,7 @@ class ApiService {
     String? pickupAddress,
     String? dropoffAddress,
   }) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.post(
       Uri.parse('$baseUrl/rides/book'),
       headers: headers,
@@ -238,7 +239,9 @@ class ApiService {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      await Geolocator.openAppSettings();
+      if (!kIsWeb) {  // ← ADD THIS CHECK
+        await Geolocator.openAppSettings();
+      }
       return null;
     }
 
@@ -282,6 +285,24 @@ class ApiService {
     return channel;
   }
 
+  // ── Get Pending Ride Request ──────────────────────────────────────────────
+  // Driver polls this every 3 seconds as backup to WebSocket
+  // Ensures driver gets ride requests even if WebSocket disconnects
+  static Future<Map<String, dynamic>?> getPendingRequest(
+      String driverId) async {
+    final headers = await authHeaders();
+    final response = await http.get(
+      Uri.parse('$baseUrl/rides/pending-request/$driverId'),
+      headers: headers,
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return data['request'];
+    }
+    return null;
+  }
+
   // ── Update Ride Status ────────────────────────────────────────────────────
   // Called by driver when they accept, start or complete a ride
   // Updates the status in database
@@ -289,12 +310,16 @@ class ApiService {
     required String rideId,
     required String status,
   }) async {
-    final headers = await _authHeaders();
-    await http.patch(
+    final headers = await authHeaders();
+    final response = await http.patch(
       Uri.parse('$baseUrl/rides/$rideId/status'),
       headers: headers,
       body: jsonEncode({'status': status}),
-    );
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update ride status: ${response.statusCode}');
+    }
   }
 
   // ── Create Razorpay Order ─────────────────────────────────────────────────
@@ -304,7 +329,7 @@ class ApiService {
     required String rideId,
     required double amount,
   }) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.post(
       Uri.parse('$baseUrl/payments/create-order'),
       headers: headers,
@@ -331,7 +356,7 @@ class ApiService {
     required String paymentId,
     required String signature,
   }) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.post(
       Uri.parse('$baseUrl/payments/verify'),
       headers: headers,
@@ -355,12 +380,16 @@ class ApiService {
   static Future<void> recordCashPayment({
     required String rideId,
   }) async {
-    final headers = await _authHeaders();
-    await http.post(
+    final headers = await authHeaders();
+    final response = await http.post(
       Uri.parse('$baseUrl/payments/cash'),
       headers: headers,
       body: jsonEncode({'ride_id': rideId}),
-    );
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to record cash payment: ${response.statusCode}');
+    }
   }
 
   // ── Submit Rating ─────────────────────────────────────────────────────────
@@ -371,8 +400,8 @@ class ApiService {
     required String rideId,
     required int rating,
   }) async {
-    final headers = await _authHeaders();
-    await http.post(
+    final headers = await authHeaders();
+    final response = await http.post(
       Uri.parse('$baseUrl/rides/$rideId/rating'),
       headers: headers,
       body: jsonEncode({'rating': rating}),
@@ -435,7 +464,7 @@ class ApiService {
   // Fetches the fixed auto route stored in database
   // Returns list of coordinates forming the route polyline
   static Future<List<Map<String, dynamic>>> getFixedRoute() async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.get(
       Uri.parse('$baseUrl/rides/fixed-route'),
       headers: headers,
@@ -459,7 +488,7 @@ class ApiService {
   // Fetches list of all predefined routes from database
   // Shown to driver when they tap "Go Online"
   static Future<List<Map<String, dynamic>>> getPredefinedRoutes() async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.get(
       Uri.parse('$baseUrl/rides/predefined-routes'),
       headers: headers,
@@ -479,7 +508,7 @@ class ApiService {
     required String driverId,
     required String routeId,
   }) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     await http.post(
       Uri.parse('$baseUrl/rides/select-route'),
       headers: headers,
@@ -491,7 +520,7 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> getDriverActiveRoute(String driverId) async {
-    final headers = await _authHeaders();
+    final headers = await authHeaders();
     final response = await http.get(
       Uri.parse('$baseUrl/rides/driver-active-route/$driverId'),
       headers: headers,
@@ -500,5 +529,51 @@ class ApiService {
       return jsonDecode(response.body);
     }
     return {'route': null};
+  }
+
+  // ── Get Ride Status ───────────────────────────────────────────────────────
+  // Customer polls this every 3 seconds while waiting for driver
+  // Returns status + driver details when accepted
+  static Future<Map<String, dynamic>> getRideStatus(String rideId) async {
+    final headers = await authHeaders();
+    final response = await http.get(
+      Uri.parse('$baseUrl/rides/$rideId/status'),
+      headers: headers,
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Failed to get ride status');
+  }
+
+  // ── Update Customer Location ──────────────────────────────────────────────
+  // Customer sends live location to backend after ride is accepted
+  // Driver can see customer location on their map
+  static Future<void> updateCustomerLocation({
+    required String rideId,
+    required double lat,
+    required double lng,
+  }) async {
+    final headers = await authHeaders();
+    await http.post(
+      Uri.parse('$baseUrl/rides/$rideId/customer-location'),
+      headers: headers,
+      body: jsonEncode({'latitude': lat, 'longitude': lng}),
+    );
+  }
+
+  // ── Get Customer Location ─────────────────────────────────────────────────
+  // Driver polls this to see customer's live location
+  static Future<Map<String, dynamic>?> getCustomerLocation(String rideId) async {
+    final headers = await authHeaders();
+    final response = await http.get(
+      Uri.parse('$baseUrl/rides/$rideId/customer-location'),
+      headers: headers,
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    return null;
   }
 }

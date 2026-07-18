@@ -48,7 +48,7 @@ def get_nearby_autos(
             "point_lng": dropoff_lng
         }).execute()
 
-        ride_distance = supabase.rpc("get_route_distance", {
+        ride_distance_result = supabase.rpc("get_route_distance", {
             "route_id": route_id,
             "pickup_lat": pickup_lat,
             "pickup_lng": pickup_lng,
@@ -56,7 +56,8 @@ def get_nearby_autos(
             "dropoff_lng": dropoff_lng
         }).execute()
 
-        ride_km = (ride_distance.data or 1000) / 1000
+        ride_distance = float(ride_distance_result.data) if ride_distance_result.data else 1000
+        ride_km = ride_distance / 1000
 
         # Same fare slabs as Flutter
         if ride_km <= 1: fare = 10
@@ -87,7 +88,7 @@ def get_nearby_autos(
 # Driver will then accept/reject it
 
 @router.post("/book")
-def book_ride(data: RideRequest):
+async def book_ride(data: RideRequest):
     # Step 1 — Get fixed route
     route_result = supabase.table("fixed_routes").select("*").limit(1).execute()
     if not route_result.data:
@@ -121,7 +122,14 @@ def book_ride(data: RideRequest):
     }).execute()
 
     distance_meters = distance.data if distance.data else 1000
-    fare = round(10 + (distance_meters / 100) * 2, 0)
+    ride_km = float(distance_meters) / 1000
+
+    if ride_km <= 1: fare = 10
+    elif ride_km <= 3: fare = 20
+    elif ride_km <= 5: fare = 30
+    elif ride_km <= 7: fare = 40
+    elif ride_km <= 10: fare = 50
+    else: fare = 50 + (int((ride_km - 10) / 2) + 1) * 10
 
     # Step 5 — Create ride record in database
     pickup_point = f"POINT({data.pickup_longitude} {data.pickup_latitude})"
@@ -144,11 +152,52 @@ def book_ride(data: RideRequest):
         raise HTTPException(status_code=500, detail="Failed to create ride")
 
     ride = ride_result.data[0]
+    ride_id = ride["id"]
 
     # Step 6 — Return ride details including nearest route points
     # Flutter will use these to show walking path to/from route
     pickup_nearest_data = pickup_nearest.data if pickup_nearest.data else {}
     dropoff_nearest_data = dropoff_nearest.data if dropoff_nearest.data else {}
+
+    # ── Notify driver via WebSocket ────────────────────────────────────────
+    # Send ride request to driver's WebSocket connection
+    # Driver sees popup with ride details
+    # import asyncio
+    # import math
+
+    # # Calculate distance from driver to pickup
+    # driver_result = supabase.table("drivers").select(
+    #     "id"
+    # ).eq("id", data.driver_id).execute()
+
+    # driver_to_pickup = supabase.rpc("get_route_distance", {
+    #     "route_id": route_id,
+    #     "pickup_lat": data.pickup_latitude,
+    #     "pickup_lng": data.pickup_longitude,
+    #     "dropoff_lat": data.pickup_latitude,
+    #     "dropoff_lng": data.pickup_longitude
+    # }).execute()
+
+    ride_request_message = {
+        "type": "ride_request",
+        "ride_id": ride_id,
+        "user_id": data.user_id,
+        "pickup_address": data.pickup_address,
+        "dropoff_address": data.dropoff_address,
+        "pickup_lat": data.pickup_latitude,
+        "pickup_lng": data.pickup_longitude,
+        "dropoff_lat": data.dropoff_latitude,
+        "dropoff_lng": data.dropoff_longitude,
+        "fare": fare,
+        "distance_meters": distance_meters,
+    }
+
+    # Now we can properly await since function is async
+    try:
+        await manager.broadcast_to_driver(str(data.driver_id), ride_request_message)
+        print(f"Ride request sent to driver {data.driver_id}")
+    except Exception as e:
+        print(f"WebSocket notify failed: {e}")
 
     return {
         "ride_id": ride["id"],
@@ -224,8 +273,20 @@ async def update_ride_status(ride_id: str, data: dict):
     if not result.data:
         raise HTTPException(status_code=404, detail="Ride not found")
 
-    # Notify customer via WebSocket
-    await manager.send_ride_status(ride_id, new_status)
+    # Notify the driver via WebSocket (best-effort).
+    # The customer app polls GET /rides/{ride_id}/status, so no
+    # customer WebSocket notification is needed.
+    ride = result.data[0] if isinstance(result.data, list) else result.data
+    driver_id = ride.get("driver_id")
+    if driver_id:
+        try:
+            await manager.broadcast_to_driver(str(driver_id), {
+                "type": "ride_status",
+                "ride_id": ride_id,
+                "status": new_status,
+            })
+        except Exception as e:
+            print(f"WebSocket notify failed: {e}")
 
     return {"message": f"Ride status updated to {new_status}"}
 
@@ -234,7 +295,7 @@ async def update_ride_status(ride_id: str, data: dict):
 # Saves rating and updates driver's average rating
 
 @router.post("/{ride_id}/rating")
-def submit_rating(ride_id: str, data: dict):
+async def submit_rating(ride_id: str, data: dict):
     rating = data.get("rating")
     if not rating or rating < 1 or rating > 5:
         raise HTTPException(status_code=400, detail="Rating must be 1-5")
@@ -317,7 +378,7 @@ def get_nearest_on_route(lat: float, lng: float):
         return data[0]
     return data
 
-    # ── Get All Predefined Routes ──────────────────────────────────────────────
+# ── Get All Predefined Routes ──────────────────────────────────────────────
 # Returns list of all predefined routes for driver to choose from
 # Driver sees this list when they tap "Go Online"
 
@@ -382,3 +443,105 @@ def get_driver_active_route(driver_id: str):
 
     data = result.data[0] if isinstance(result.data, list) else result.data
     return {"route": data}
+
+# ── Get Ride Status ────────────────────────────────────────────────────────
+# Customer polls this every 3 seconds to check if driver accepted
+# Returns current ride status + driver details when accepted
+
+@router.get("/{ride_id}/status")
+def get_ride_status(ride_id: str):
+    result = supabase.table("rides").select(
+        "id, status, fare, driver_id, "
+        "pickup_address, dropoff_address"
+    ).eq("id", ride_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Ride not found")
+
+    ride = result.data[0] if isinstance(result.data, list) else result.data
+
+    # If accepted — include driver details
+    if ride["status"] in ["accepted", "in_progress"] and ride["driver_id"]:
+        driver = supabase.table("drivers").select(
+            "id, name, phone, vehicle_number, rating"
+        ).eq("id", ride["driver_id"]).execute()
+
+        driver_data = driver.data[0] if isinstance(
+            driver.data, list) else driver.data
+
+        return {
+            "ride_id": ride["id"],
+            "status": ride["status"],
+            "fare": ride["fare"],
+            "driver": driver_data,
+        }
+
+    return {
+        "ride_id": ride["id"],
+        "status": ride["status"],
+        "fare": ride["fare"],
+        "driver": None,
+    }
+
+# ── Update Customer Location ───────────────────────────────────────────────
+# Customer sends their live location every 5 seconds after booking
+# Driver can see customer location on their map
+
+@router.post("/{ride_id}/customer-location")
+def update_customer_location(ride_id: str, data: dict):
+    lat = data.get("latitude")
+    lng = data.get("longitude")
+
+    if not lat or not lng:
+        raise HTTPException(status_code=400, detail="lat/lng required")
+
+    supabase.table("rides").update({
+        "pickup_location": f"POINT({lng} {lat})"
+    }).eq("id", ride_id).eq("status", "accepted").execute()
+
+    return {"message": "Location updated"}
+
+# ── Get Customer Location ──────────────────────────────────────────────────
+# Driver polls this to see customer's live location
+# Called every 3 seconds after accepting a ride
+
+@router.get("/{ride_id}/customer-location")
+def get_customer_location(ride_id: str):
+    result = supabase.rpc("get_customer_location", {
+        "ride_id_input": ride_id
+    }).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Location not found")
+
+    data = result.data
+    if isinstance(data, list):
+        return data[0]
+    return data
+
+# ── Get Pending Ride Request for Driver ────────────────────────────────────
+# Driver polls this every 3 seconds as backup to WebSocket
+# Returns any pending ride request assigned to this driver
+# This ensures driver always gets notified even if WebSocket disconnects
+
+@router.get("/pending-request/{driver_id}")
+def get_pending_request(driver_id: str):
+    result = supabase.table("rides").select(
+        "id, user_id, pickup_address, dropoff_address, "
+        "fare, distance_meters, status"
+    ).eq("driver_id", driver_id).eq("status", "requested").limit(1).execute()
+
+    if not result.data:
+        return {"request": None}
+
+    data = result.data[0] if isinstance(result.data, list) else result.data
+    return {
+        "request": {
+            "type": "ride_request",
+            "ride_id": data["id"],
+            "pickup_address": data["pickup_address"],
+            "dropoff_address": data["dropoff_address"],
+            "fare": data["fare"],
+            "distance_meters": data["distance_meters"],
+        }
+    }
