@@ -88,7 +88,7 @@ def get_nearby_autos(
 # Driver will then accept/reject it
 
 @router.post("/book")
-def book_ride(data: RideRequest):
+async def book_ride(data: RideRequest):
     # Step 1 — Get fixed route
     route_result = supabase.table("fixed_routes").select("*").limit(1).execute()
     if not route_result.data:
@@ -162,22 +162,6 @@ def book_ride(data: RideRequest):
     # ── Notify driver via WebSocket ────────────────────────────────────────
     # Send ride request to driver's WebSocket connection
     # Driver sees popup with ride details
-    import asyncio
-    import math
-
-    # Calculate distance from driver to pickup
-    driver_result = supabase.table("drivers").select(
-        "id"
-    ).eq("id", data.driver_id).execute()
-
-    driver_to_pickup = supabase.rpc("get_route_distance", {
-        "route_id": route_id,
-        "pickup_lat": data.pickup_latitude,
-        "pickup_lng": data.pickup_longitude,
-        "dropoff_lat": data.pickup_latitude,
-        "dropoff_lng": data.pickup_longitude
-    }).execute()
-
     ride_request_message = {
         "type": "ride_request",
         "ride_id": ride_id,
@@ -192,8 +176,11 @@ def book_ride(data: RideRequest):
         "distance_meters": distance_meters,
     }
 
-    # Now we can properly await since function is async
-    await manager.broadcast_to_driver(data.driver_id, ride_request_message)
+    # Best-effort WebSocket push; driver also polls /pending-request as backup
+    try:
+        await manager.broadcast_to_driver(str(data.driver_id), ride_request_message)
+    except Exception as e:
+        print(f"WebSocket notify failed: {e}")
     print(f"Ride request sent to driver {data.driver_id}")
 
     return {
@@ -270,8 +257,20 @@ async def update_ride_status(ride_id: str, data: dict):
     if not result.data:
         raise HTTPException(status_code=404, detail="Ride not found")
 
-    # Notify customer via WebSocket
-    await manager.send_ride_status(ride_id, new_status)
+    # Notify the driver on this ride via WebSocket (best-effort).
+    # The customer app polls GET /rides/{ride_id}/status, so no
+    # customer WebSocket notification is needed.
+    ride = result.data[0] if isinstance(result.data, list) else result.data
+    driver_id = ride.get("driver_id")
+    if driver_id:
+        try:
+            await manager.broadcast_to_driver(str(driver_id), {
+                "type": "ride_status",
+                "ride_id": ride_id,
+                "status": new_status,
+            })
+        except Exception as e:
+            print(f"WebSocket notify failed: {e}")
 
     return {"message": f"Ride status updated to {new_status}"}
 
