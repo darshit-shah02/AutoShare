@@ -13,6 +13,7 @@ class RegistrationPage extends StatefulWidget {
 
 class _RegistrationPage extends State<RegistrationPage> {
   String selectedItem = 'Customer';
+  String selectedGender = 'Other';
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _vehicleController = TextEditingController();
@@ -97,6 +98,30 @@ class _RegistrationPage extends State<RegistrationPage> {
                           floatingLabelBehavior: FloatingLabelBehavior.always,
                           prefixIcon: Icon(Icons.phone, color: Colors.black),
                         ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      DropdownButtonFormField<String>(
+                        decoration: InputDecoration(
+                          labelText: 'Gender',
+                          prefixIcon: Icon(Icons.person, color: Colors.black),
+                        ),
+                        initialValue: selectedGender,
+                        icon: const Icon(Icons.arrow_drop_down),
+                        style: const TextStyle(color: Colors.black),
+                        dropdownColor: Colors.white,
+                        onChanged: (String? newValue) {
+                          setState(() => selectedGender = newValue!);
+                        },
+                        items: ['M', 'F', 'Other'].map<DropdownMenuItem<String>>((String value) {
+                          return DropdownMenuItem<String>(
+                            value: value,
+                            child: Text(
+                              value == 'M' ? 'Male' : value == 'F' ? 'Female' : 'Other',
+                              style: const TextStyle(color: Colors.black),
+                            ),
+                          );
+                        }).toList(),
                       ),
                       const SizedBox(height: 12),
 
@@ -250,6 +275,7 @@ class _RegistrationPage extends State<RegistrationPage> {
                                   email: _emailController.text,
                                   phone: _phoneController.text,
                                   password: _passwordController.text,
+                                  gender: selectedGender,
                                 );
                               } else {
                                 // Call driver registration API

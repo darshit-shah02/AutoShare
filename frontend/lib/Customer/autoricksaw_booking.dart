@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:developer';
+import 'package:autoshare/Customer/ride_complete_screen.dart';
 import 'package:autoshare/Payment/payment.dart';
 import 'package:autoshare/services/api_service.dart';
 import 'package:flutter/material.dart';
@@ -41,6 +42,7 @@ class AutoricksawBooking extends StatefulWidget {
 
 class AutoricksawBookingState extends State<AutoricksawBooking> {
   final MapController _mapController = MapController();
+  bool _hasArrived = false;
 
   // User's real GPS location
   LatLng? userLocation;
@@ -65,6 +67,8 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
   WebSocketChannel? _customerChannel;
   Timer? _locationPollTimer;
   Timer? _customerLocationTimer;
+
+  Timer? _arrivalCheckTimer;
 
   @override
   void initState() {
@@ -111,6 +115,8 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
 
     _connectToDriverLocation();
     _startSendingCustomerLocation();
+    
+    _startArrivalCheck();
   }
 
   void _startSendingCustomerLocation() {
@@ -126,6 +132,13 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
           );
         }
       },
+    );
+  }
+
+  void _startArrivalCheck() {
+    _arrivalCheckTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _checkIfArrived(),
     );
   }
 
@@ -210,11 +223,31 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
     }
   }
 
+  Future<void> _checkIfArrived() async {
+    if (_hasArrived || dropoffRoutePoint == null) return;
+
+    final location = await ApiService.getCurrentLocation();
+    if (location == null) return;
+
+    const distCalc = Distance();
+    final distToDropoff = distCalc(
+      LatLng(location['latitude']!, location['longitude']!),
+      dropoffRoutePoint!,
+    );
+
+    // Within 100m of dropoff point = arrived
+    if (distToDropoff <= 100 && mounted) {
+      setState(() => _hasArrived = true);
+      _arrivalCheckTimer?.cancel();
+    }
+  }
+
   // Clean up timer in dispose
   @override
   void dispose() {
     _customerLocationTimer?.cancel();
     _locationPollTimer?.cancel();
+    _arrivalCheckTimer?.cancel();
     _customerChannel?.sink.close();
     super.dispose();
   }
@@ -526,6 +559,50 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
                             ),
                           ),
                         ),
+                        if (_hasArrived) ...[
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              onPressed: () async {
+                                try {
+                                  final result = await ApiService.completeRide(widget.rideId);
+                                  if (!mounted) return;
+                                  Navigator.pushReplacement(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => RideCompleteScreen(
+                                        rideId: widget.rideId,
+                                        fare: result['fare'].toString(),
+                                        driverName: widget.driverName,
+                                        vehicalNo: widget.vehicalNo,
+                                      ),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Error: $e'),
+                                        backgroundColor: Colors.red),
+                                  );
+                                }
+                              },
+                              child: const Text(
+                                '✓ I have arrived - Complete Ride',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   );

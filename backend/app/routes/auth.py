@@ -45,6 +45,7 @@ def register_customer(data: CustomerRegister):
         "email": data.email,
         "phone": data.phone,
         "password_hash": hash_password(data.password),
+        "gender": data.gender,
     }).execute()
 
     if not result.data:
@@ -87,6 +88,7 @@ def register_driver(data: DriverRegister):
         "password_hash": hash_password(data.password),
         "vehicle_number": data.vehicle_number,
         "license_number": data.license_number,
+        "gender": data.gender,
     }).execute()
 
     if not result.data:

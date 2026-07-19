@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:autoshare/Driver/driver_cash_confirm_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
@@ -38,12 +39,13 @@ class DriverOnlineState extends State<DriverOnline> {
   String? activeRideId;
   bool showPopup = false;
   Map<String, dynamic>? pendingRequest;
-  LatLng? customerLocation;
+  Map<String, LatLng> customerLocations = {};
   String driverId = '';
 
   // Track which ride requests we've already shown
   // Prevents showing same popup repeatedly
   final Set<String> _shownRequestIds = {};
+  final List<String> _acceptedRideIds = [];
 
   @override
   void initState() {
@@ -93,6 +95,9 @@ class DriverOnlineState extends State<DriverOnline> {
         final message = jsonDecode(data);
         if (message['type'] == 'ride_request') {
           _showRideRequest(message);
+        } else if (message['type'] == 'ride_completed') {
+          // One passenger's ride completed
+          _handleRideCompleted(message);
         }
       },
       onDone: () {
@@ -228,6 +233,7 @@ class DriverOnlineState extends State<DriverOnline> {
     setState(() {
       showPopup = false;
       activeRideId = rideId;
+      _acceptedRideIds.add(rideId);
     });
 
     ApiService.updateRideStatus(
@@ -248,7 +254,7 @@ class DriverOnlineState extends State<DriverOnline> {
           final location = await ApiService.getCustomerLocation(rideId);
           if (location != null && mounted) {
             setState(() {
-              customerLocation = LatLng(
+              customerLocations[rideId] = LatLng(
                 location['latitude'],
                 location['longitude'],
               );
@@ -258,6 +264,50 @@ class DriverOnlineState extends State<DriverOnline> {
           debugPrint('Customer location error: $e');
         }
       },
+    );
+  }
+
+  void _handleRideCompleted(Map<String, dynamic> message) {
+    final rideId = message['ride_id'];
+    final fare = message['fare'].toString();
+
+    // Find the completed ride in active rides
+    // Show cash confirmation if payment is cash
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Passenger Arrived'),
+        content: Text('A passenger has reached their stop.\nFare: ₹$fare'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // Navigate to cash confirm screen
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => DriverCashConfirmScreen(
+                    rideId: rideId,
+                    fare: fare,
+                    customerName: 'Passenger',
+                    source: widget.source,
+                    destination: widget.destination,
+                    routeId: widget.routeId,
+                  ),
+                ),
+              );
+            },
+            child: const Text('Collect Cash',
+                style: TextStyle(color: Colors.black)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Online Paid',
+                style: TextStyle(color: Colors.green)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -438,17 +488,12 @@ class DriverOnlineState extends State<DriverOnline> {
                           ),
 
                         // Customer location (after accepting)
-                        if (customerLocation != null)
-                          Marker(
-                            point: customerLocation!,
-                            width: 40,
-                            height: 40,
-                            child: const Icon(
-                              Icons.person_pin_circle,
-                              color: Colors.blue,
-                              size: 40,
-                            ),
-                          ),
+                        ...customerLocations.entries.map((entry) => Marker(
+                          point: entry.value,
+                          width: 40,
+                          height: 40,
+                          child: const Icon(Icons.person_pin_circle, color: Colors.blue, size: 40),
+                        )),
                       ],
                     ),
                   ],

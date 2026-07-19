@@ -173,12 +173,17 @@ class AutoricksawListState extends State<AutoricksawList> {
   // ── Auto card widget ───────────────────────────────────────────────────
   // Shows real driver details from API
   Widget _buildAutoCard(Map<String, dynamic> auto) {
+    final canBook = auto['can_book'] as bool? ?? false;
+    final maleCount = auto['male_count'] as int? ?? 0;
+    final femaleCount = auto['female_count'] as int? ?? 0;
+    final distanceMeters = auto['distance_meters'] as double? ?? 0;
+
     return Card(
       elevation: 6,
       color: Colors.white,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Colors.black, width: 1.5),
+        side: BorderSide(color: canBook ? Colors.black : Colors.grey.shade300, width: 1.5),
       ),
       margin: const EdgeInsets.symmetric(vertical: 8),
       child: Padding(
@@ -196,11 +201,70 @@ class AutoricksawListState extends State<AutoricksawList> {
                       Text(auto['name'] ?? '',
                           style: const TextStyle(
                               fontSize: 18, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 4),
                       Text("Vehicle: ${auto['vehicle_number'] ?? ''}"),
                       Text("⭐ ${auto['rating']?.toStringAsFixed(1) ?? '5.0'}"),
-                      Text("Distance: ${auto['distance_meters']?.toStringAsFixed(0) ?? '0'} m"),
+                      // Distance from auto to customer pickup
+                      Row(
+                        children: [
+                          const Icon(Icons.directions_car,
+                              size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Text(
+                            distanceMeters < 1000
+                                ? "${distanceMeters.toStringAsFixed(0)} m away"
+                                : "${(distanceMeters / 1000).toStringAsFixed(1)} km away",
+                            style: TextStyle(
+                              color: canBook ? Colors.green : Colors.grey,
+                              fontWeight: FontWeight.w500,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+
                       Text("Fare: ₹${auto['fare']?.toStringAsFixed(0) ?? '0'}"),
+
+                      // Gender passenger count
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.people, size: 14, color: Colors.grey),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${maleCount}M  ${femaleCount}F',
+                              style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // 500m warning
+                      if (!canBook)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.info_outline,
+                                  size: 13, color: Colors.orange),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Auto must be within 500m to book',
+                                style: TextStyle(
+                                    fontSize: 11, color: Colors.orange.shade700),
+                              ),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -208,8 +272,10 @@ class AutoricksawListState extends State<AutoricksawList> {
                   padding: const EdgeInsets.all(8),
                   child: Image.asset(
                     'assets/Images/urban_tuk_tuk.png',
-                    width: 100,
-                    height: 100,
+                    width: 80,
+                    height: 80,
+                    color: canBook ? null : Colors.grey,
+                    colorBlendMode: canBook ? null : BlendMode.saturation,
                   ),
                 ),
               ],
@@ -218,7 +284,7 @@ class AutoricksawListState extends State<AutoricksawList> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: () {
+                onPressed: canBook ? () {
                   handleConfirmResult(
                     context,
                     false,
@@ -237,21 +303,21 @@ class AutoricksawListState extends State<AutoricksawList> {
                     pickupAddress: widget.pickupAddress,
                     dropoffAddress: widget.dropoffAddress,
                   );
-                },
+                } : null,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color.fromARGB(255, 254, 187, 38),
-                  side: const BorderSide(color: Colors.black),
+                  backgroundColor: canBook ? const Color.fromARGB(255, 254, 187, 38) : Colors.grey.shade300,
+                  side: BorderSide(color: canBook ? Colors.black : Colors.transparent),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                child: const Text(
-                  "Select this Auto",
+                child: Text(
+                  canBook ? "Select this Auto" : "Auto too far",
                   style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Colors.black),
+                      color:canBook ? Colors.black : Colors.grey,),
                 ),
               ),
             ),

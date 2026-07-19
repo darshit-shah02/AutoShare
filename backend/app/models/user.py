@@ -7,6 +7,7 @@ class CustomerRegister(BaseModel):
     email: EmailStr
     phone: str
     password: str
+    gender: str = 'Other'
 
 class DriverRegister(BaseModel):
     name: str
@@ -15,6 +16,7 @@ class DriverRegister(BaseModel):
     password: str
     vehicle_number: str
     license_number: str
+    gender: str = 'Other'
 
 # ── Login ─────────────────────────────────────
 class LoginRequest(BaseModel):

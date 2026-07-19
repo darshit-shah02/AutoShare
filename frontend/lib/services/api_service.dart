@@ -52,6 +52,7 @@ class ApiService {
     required String email,
     required String phone,
     required String password,
+    String gender = 'Other',
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/auth/register/customer'),
@@ -61,6 +62,7 @@ class ApiService {
         'email': email,
         'phone': phone,
         'password': password,
+        'gender': gender,
       }),
     );
 
@@ -320,6 +322,46 @@ class ApiService {
     if (response.statusCode != 200) {
       throw Exception('Failed to update ride status: ${response.statusCode}');
     }
+  }
+
+  // ── Complete Ride ─────────────────────────────────────────────────────────
+  static Future<Map<String, dynamic>> completeRide(String rideId) async {
+    final headers = await authHeaders();
+    final response = await http.post(
+      Uri.parse('$baseUrl/rides/$rideId/complete'),
+      headers: headers,
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Failed to complete ride');
+  }
+
+  // ── Driver Confirms Cash Received ─────────────────────────────────────────
+  static Future<void> confirmCashReceived(String rideId) async {
+    final headers = await authHeaders();
+    await http.post(
+      Uri.parse('$baseUrl/rides/$rideId/cash-received'),
+      headers: headers,
+    );
+  }
+
+  // ── Get Pending Request (updated) ─────────────────────────────────────────
+  static Future<List<Map<String, dynamic>>> getPendingRequests(
+      String driverId) async {
+    final headers = await authHeaders();
+    final response = await http.get(
+      Uri.parse('$baseUrl/rides/pending-request/$driverId'),
+      headers: headers,
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final requests = data['requests'] as List? ?? [];
+      return requests.cast<Map<String, dynamic>>();
+    }
+    return [];
   }
 
   // ── Create Razorpay Order ─────────────────────────────────────────────────

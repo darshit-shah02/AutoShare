@@ -18,13 +18,15 @@ def get_nearby_autos(
     pickup_lat: float,
     pickup_lng: float,
     dropoff_lat: float,
-    dropoff_lng: float
+    dropoff_lng: float,
+    nearest_route_lat: float = None,
+    nearest_route_lng: float = None,
 ):
     # Step 1 — Find online drivers near pickup location
     drivers_result = supabase.rpc("get_nearby_drivers", {
         "user_lat": pickup_lat,
         "user_lng": pickup_lng,
-        "radius_m": 5000
+        "radius_m": 20000
     }).execute()
 
     if not drivers_result.data:
@@ -37,18 +39,7 @@ def get_nearby_autos(
 
     route_id = route_result.data[0]["id"]
 
-    # Step 3 — For each driver, calculate nearest point on route
-    # and estimate fare based on distance along route
-    autos = []
-    for driver in drivers_result.data:
-        # Get nearest point on fixed route to dropoff location
-        nearest = supabase.rpc("get_nearest_point_on_route", {
-            "route_id": route_id,
-            "point_lat": dropoff_lat,
-            "point_lng": dropoff_lng
-        }).execute()
-
-        ride_distance_result = supabase.rpc("get_route_distance", {
+    ride_distance_result = supabase.rpc("get_route_distance", {
             "route_id": route_id,
             "pickup_lat": pickup_lat,
             "pickup_lng": pickup_lng,
@@ -56,28 +47,77 @@ def get_nearby_autos(
             "dropoff_lng": dropoff_lng
         }).execute()
 
-        ride_distance = float(ride_distance_result.data) if ride_distance_result.data else 1000
-        ride_km = ride_distance / 1000
+    ride_distance = float(ride_distance_result.data) if ride_distance_result.data else 1000
+    ride_km = ride_distance / 1000
 
-        # Same fare slabs as Flutter
-        if ride_km <= 1: fare = 10
-        elif ride_km <= 3: fare = 20
-        elif ride_km <= 5: fare = 30
-        elif ride_km <= 7: fare = 40
-        elif ride_km <= 10: fare = 50
-        else: fare = 50 + (((ride_km - 10) / 2).__ceil__()) * 10
+    # Same fare slabs as Flutter
+    if ride_km <= 1: fare = 10
+    elif ride_km <= 3: fare = 20
+    elif ride_km <= 5: fare = 30
+    elif ride_km <= 7: fare = 40
+    elif ride_km <= 10: fare = 50
+    else: fare = 50 + (int((ride_km - 10) / 2) + 1) * 10
+
+    # Step 3 — For each driver, calculate nearest point on route
+    # and estimate fare based on distance along route
+    autos = []
+    for driver in drivers_result.data:
+        # Get nearest point on fixed route to dropoff location
+        # nearest = supabase.rpc("get_nearest_point_on_route", {
+        #     "route_id": route_id,
+        #     "point_lat": dropoff_lat,
+        #     "point_lng": dropoff_lng
+        # }).execute()
+
+        driver_id = str(driver["driver_id"])
+
+        # Get distance from driver to customer pickup point
+        # This is what shows in the auto list and popup
+        driver_to_pickup = float(driver["distance_meters"])
+
+        # Check if driver is within 500m of nearest route point
+        # If nearest_route provided, use that; else use pickup
+        check_lat = nearest_route_lat or pickup_lat
+        check_lng = nearest_route_lng or pickup_lng
+
+        can_book_result = supabase.rpc("check_driver_in_range", {
+            "driver_id_input": driver_id,
+            "point_lat": check_lat,
+            "point_lng": check_lng,
+            "range_meters": 500
+        }).execute()
+
+        can_book = bool(can_book_result.data) if can_book_result.data is not None else False
+
+        # Count passengers by gender from active rides
+        passengers_result = supabase.table("rides").select(
+            "id, users!rides_user_id_fkey(gender)"
+        ).eq("driver_id", driver_id).eq("status", "active").execute()
+
+        male_count = 0
+        female_count = 0
+        if passengers_result.data:
+            for ride in (passengers_result.data if isinstance(
+                    passengers_result.data, list) else []):
+                user = ride.get("users") or {}
+                gender = user.get("gender", "Other") if isinstance(user, dict) else "Other"
+                if gender == "M": male_count += 1
+                elif gender == "F": female_count += 1
 
         autos.append({
-            "driver_id": str(driver["driver_id"]),
+            "driver_id": driver_id,
             "name": driver["name"],
             "phone": driver["phone"],
             "vehicle_number": driver["vehicle_number"],
             "rating": float(driver["rating"]),
-            "distance_meters": round(float(driver["distance_meters"]), 0),
+            "distance_meters": round(driver_to_pickup, 0),
             "fare": fare,
             "latitude": driver["latitude"],
             "longitude": driver["longitude"],
             "route_id": route_id,
+            "can_book": can_book,        # ← within 500m?
+            "male_count": male_count,    # ← M passengers
+            "female_count": female_count, # ← F passengers
         })
 
     return autos
@@ -289,6 +329,61 @@ async def update_ride_status(ride_id: str, data: dict):
             print(f"WebSocket notify failed: {e}")
 
     return {"message": f"Ride status updated to {new_status}"}
+
+# ── Complete Ride for One Passenger ───────────────────────────────────────
+# Called when customer reaches dropoff stop
+# Marks this specific passenger's ride as complete
+# Other passengers in same auto continue their ride
+
+@router.post("/{ride_id}/complete")
+async def complete_ride(ride_id: str):
+    result = supabase.table("rides").update({
+        "status": "completed",
+        "completed_at": "now()",
+        "completed_at_stop": True
+    }).eq("id", ride_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Ride not found")
+
+    ride = result.data[0] if isinstance(result.data, list) else result.data
+
+    # Notify both customer and driver via WebSocket
+    await manager.broadcast_to_driver(str(ride["driver_id"]), {
+        "type": "ride_completed",
+        "ride_id": ride_id,
+        "fare": ride["fare"],
+    })
+
+    return {
+        "message": "Ride completed",
+        "ride_id": ride_id,
+        "fare": ride["fare"],
+    }
+
+# ── Driver Confirms Cash Payment Received ─────────────────────────────────
+# Called when driver taps "Cash Received" button
+# Triggers rating screen for both parties
+
+@router.post("/{ride_id}/cash-received")
+async def cash_received(ride_id: str):
+    result = supabase.table("rides").update({
+        "payment_status": "paid",
+        "payment_method": "cash"
+    }).eq("id", ride_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Ride not found")
+
+    ride = result.data[0] if isinstance(result.data, list) else result.data
+
+    # Update driver earnings
+    supabase.rpc("update_driver_earnings", {
+        "driver_id_input": ride["driver_id"],
+        "fare_amount": ride["fare"]
+    }).execute()
+
+    return {"message": "Cash payment confirmed"}
 
 # ── Submit Rating ──────────────────────────────────────────────────────────
 # Called after ride completes
@@ -528,17 +623,61 @@ def get_customer_location(ride_id: str):
 def get_pending_request(driver_id: str):
     result = supabase.table("rides").select(
         "id, user_id, pickup_address, dropoff_address, "
-        "fare, distance_meters, status"
-    ).eq("driver_id", driver_id).eq("status", "requested").limit(1).execute()
+        "fare, distance_meters, status, created_at"
+    ).eq("driver_id", driver_id).eq(
+        "status", "requested"
+    ).gte(
+        "created_at", "now() - interval '5 minutes'"
+    ).order("created_at").limit(10).execute()
 
     if not result.data:
-        return {"request": None}
+        return {"requests": []}
+
+    requests = []
+    for data in (result.data if isinstance(result.data, list) else [result.data]):
+        # Get distance from driver to pickup
+        dist_result = supabase.rpc("get_driver_to_pickup_distance", {
+            "driver_id_input": driver_id,
+            "ride_id_input": data["id"]
+        }).execute()
+
+        # Get pickup coordinates
+        pickup_result = supabase.rpc("get_ride_pickup_location", {
+            "ride_id_input": data["id"]
+        }).execute()
+
+        driver_to_pickup = float(dist_result.data) if dist_result.data else 0
+        pickup_coords = pickup_result.data if pickup_result.data else {}
+
+        requests.append({
+            "type": "ride_request",
+            "ride_id": data["id"],
+            "user_id": data["user_id"],
+            "pickup_address": data["pickup_address"],
+            "dropoff_address": data["dropoff_address"],
+            "fare": data["fare"],
+            "distance_meters": data["distance_meters"],
+            "driver_to_pickup_meters": driver_to_pickup,
+            "pickup_lat": pickup_coords.get("latitude"),
+            "pickup_lng": pickup_coords.get("longitude"),
+        })
+
+    return {"requests": requests}
 
     data = result.data[0] if isinstance(result.data, list) else result.data
+
+     # Get pickup coordinates from PostGIS
+    pickup_coords = supabase.rpc("get_point_coordinates", {
+        "point_input": data["id"],
+        "table_name": "rides",
+        "column_name": "pickup_location"
+    }).execute()
+
     return {
         "request": {
             "type": "ride_request",
             "ride_id": data["id"],
+            "user_id": data["user_id"],
             "pickup_address": data["pickup_address"],
             "dropoff_address": data["dropoff_address"],
             "fare": data["fare"],
