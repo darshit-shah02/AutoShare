@@ -91,18 +91,47 @@ def get_nearby_autos(
 
         # Count passengers by gender from active rides
         passengers_result = supabase.table("rides").select(
-            "id, users!rides_user_id_fkey(gender)"
+            "user_id"
         ).eq("driver_id", driver_id).eq("status", "active").execute()
 
         male_count = 0
         female_count = 0
+        
         if passengers_result.data:
-            for ride in (passengers_result.data if isinstance(
-                    passengers_result.data, list) else []):
-                user = ride.get("users") or {}
-                gender = user.get("gender", "Other") if isinstance(user, dict) else "Other"
-                if gender == "M": male_count += 1
-                elif gender == "F": female_count += 1
+            rides_list = (
+                passengers_result.data
+                if isinstance(passengers_result.data, list)
+                else [passengers_result.data]
+            )
+
+            for ride in rides_list:
+                user_result = supabase.table("users").select(
+                    "gender"
+                ).eq("id", ride["user_id"]).execute()
+
+                if user_result.data:
+                    user_data = (
+                        user_result.data[0]
+                        if isinstance(user_result.data, list)
+                        else user_result.data
+                    )
+
+                    gender = user_data.get("gender", "Other")
+
+                    if gender == "M":
+                        male_count += 1
+                    elif gender == "F":
+                        female_count += 1
+
+        # After calculating male_count and female_count
+        total_passengers = male_count + female_count
+
+        # Auto is full if 3 or more passengers
+        is_full = total_passengers >= 3
+
+        # Only show auto if not full
+        if is_full:
+            continue  # ← skip this auto entirely
 
         autos.append({
             "driver_id": driver_id,
@@ -115,9 +144,11 @@ def get_nearby_autos(
             "latitude": driver["latitude"],
             "longitude": driver["longitude"],
             "route_id": route_id,
-            "can_book": can_book,        # ← within 500m?
-            "male_count": male_count,    # ← M passengers
-            "female_count": female_count, # ← F passengers
+            "can_book": can_book,
+            "male_count": male_count,
+            "female_count": female_count,
+            "total_passengers": total_passengers,
+            "seats_left": 3 - total_passengers,
         })
 
     return autos
@@ -547,7 +578,8 @@ def get_driver_active_route(driver_id: str):
 def get_ride_status(ride_id: str):
     result = supabase.table("rides").select(
         "id, status, fare, driver_id, "
-        "pickup_address, dropoff_address"
+        "pickup_address, dropoff_address, "
+        "payment_status, payment_method"
     ).eq("id", ride_id).execute()
 
     if not result.data:
@@ -555,8 +587,7 @@ def get_ride_status(ride_id: str):
 
     ride = result.data[0] if isinstance(result.data, list) else result.data
 
-    # If accepted — include driver details
-    if ride["status"] in ["accepted", "in_progress"] and ride["driver_id"]:
+    if ride["status"] in ["accepted", "in_progress", "completed"] and ride["driver_id"]:
         driver = supabase.table("drivers").select(
             "id, name, phone, vehicle_number, rating"
         ).eq("id", ride["driver_id"]).execute()
@@ -568,6 +599,8 @@ def get_ride_status(ride_id: str):
             "ride_id": ride["id"],
             "status": ride["status"],
             "fare": ride["fare"],
+            "payment_status": ride["payment_status"],  # ← ADD
+            "payment_method": ride["payment_method"],  # ← ADD
             "driver": driver_data,
         }
 
@@ -575,6 +608,8 @@ def get_ride_status(ride_id: str):
         "ride_id": ride["id"],
         "status": ride["status"],
         "fare": ride["fare"],
+        "payment_status": ride["payment_status"],  # ← ADD
+        "payment_method": ride["payment_method"],  # ← ADD
         "driver": None,
     }
 

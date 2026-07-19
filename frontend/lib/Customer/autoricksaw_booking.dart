@@ -603,6 +603,20 @@ class AutoricksawBookingState extends State<AutoricksawBooking> {
                             ),
                           ),
                         ],
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple,
+                            minimumSize: const Size(double.infinity, 45),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          onPressed: () => setState(() => _hasArrived = true),
+                          child: const Text(
+                            '🎯 [DEMO] Simulate Arrival at Stop',
+                            style: TextStyle(color: Colors.white, fontSize: 14),
+                          ),
+                        ),
                       ],
                     ),
                   );

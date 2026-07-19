@@ -177,6 +177,7 @@ class AutoricksawListState extends State<AutoricksawList> {
     final maleCount = auto['male_count'] as int? ?? 0;
     final femaleCount = auto['female_count'] as int? ?? 0;
     final distanceMeters = auto['distance_meters'] as double? ?? 0;
+    final seatsLeft = auto['seats_left'] as int? ?? 3;
 
     return Card(
       elevation: 6,
@@ -245,6 +246,26 @@ class AutoricksawListState extends State<AutoricksawList> {
                                   fontSize: 13, fontWeight: FontWeight.w500),
                             ),
                           ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: seatsLeft > 0 ? Colors.green.shade50 : Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: seatsLeft > 0 ? Colors.green : Colors.red,
+                          ),
+                        ),
+                        child: Text(
+                          seatsLeft > 0 ? '$seatsLeft seat${seatsLeft == 1 ? '' : 's'} left' : 'Full',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: seatsLeft > 0 ? Colors.green : Colors.red,
+                          ),
                         ),
                       ),
 

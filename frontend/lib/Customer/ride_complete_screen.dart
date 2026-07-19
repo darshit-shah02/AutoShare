@@ -116,19 +116,38 @@ class RideCompleteScreenState extends State<RideCompleteScreen> {
   }
 
   void _pollForCashConfirmation() async {
-    for (int i = 0; i < 60; i++) {
+    for (int i = 0; i < 60; i++) {  // poll for 3 minutes max
       await Future.delayed(const Duration(seconds: 3));
+
+      if (!mounted) return;
+
       try {
         final status = await ApiService.getRideStatus(widget.rideId);
+
+        print('Payment status: ${status['payment_status']}');  // ← debug
+
+        // ✅ Check payment_status field specifically
         if (status['payment_status'] == 'paid') {
           if (!mounted) return;
-          Navigator.pop(context); // close dialog
+          Navigator.pop(context);  // close "waiting" dialog
           _goToRating();
           return;
         }
       } catch (e) {
-        break;
+        debugPrint('Poll error: $e');
+        // continue polling
       }
+    }
+
+    // Timeout after 3 minutes
+    if (mounted) {
+      Navigator.pop(context);  // close dialog
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Payment confirmation timed out. Please check with driver.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
   }
 

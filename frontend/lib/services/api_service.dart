@@ -585,6 +585,7 @@ class ApiService {
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
+      // Now returns: {ride_id, status, fare, payment_status, payment_method, driver}
     }
     throw Exception('Failed to get ride status');
   }
