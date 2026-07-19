@@ -92,7 +92,7 @@ def get_nearby_autos(
         # Count passengers by gender from currently in-progress rides.
         passengers_result = supabase.table("rides").select(
             "user_id"
-        ).eq("driver_id", driver_id).eq("status", "accepted").execute()
+        ).eq("driver_id", driver_id).eq("status", "active").execute()
 
         male_count = 0
         female_count = 0
