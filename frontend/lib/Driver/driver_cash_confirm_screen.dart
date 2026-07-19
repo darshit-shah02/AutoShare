@@ -1,4 +1,3 @@
-import 'package:autoshare/Driver/driver_online.dart';
 import 'package:autoshare/services/api_service.dart';
 import 'package:flutter/material.dart';
 
@@ -32,18 +31,12 @@ class DriverCashConfirmScreenState extends State<DriverCashConfirmScreen> {
     try {
       await ApiService.confirmCashReceived(widget.rideId);
       if (!mounted) return;
-      // Return to driver online screen
-      // Other passengers continue
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => DriverOnline(
-            source: widget.source,
-            destination: widget.destination,
-            routeId: widget.routeId,
-          ),
-        ),
-      );
+      // Return to the SAME driver online screen we came from (pop, not
+      // pushReplacement). This screen is always pushed on top of an
+      // existing DriverOnline instance, so pushReplacement was throwing
+      // that instance away and rebuilding a fresh one — wiping out the
+      // markers/tracking for any OTHER passenger still on board.
+      Navigator.pop(context);
     } catch (e) {
       setState(() => _isConfirming = false);
       ScaffoldMessenger.of(context).showSnackBar(

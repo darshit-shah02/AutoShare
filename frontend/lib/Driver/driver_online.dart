@@ -36,7 +36,10 @@ class DriverOnlineState extends State<DriverOnline> {
   Timer? _requestPollTimer;     // polls for ride requests as backup
   Timer? _customerLocationTimer;
 
-  String? activeRideId;
+  // Set of all currently active (accepted, not-yet-completed) ride ids.
+  // A driver can carry up to 3 passengers at once, so this must support
+  // more than one concurrent ride — a single nullable String cannot.
+  final Set<String> activeRideIds = {};
   bool showPopup = false;
   Map<String, dynamic>? pendingRequest;
   Map<String, LatLng> customerLocations = {};
@@ -114,7 +117,10 @@ class DriverOnlineState extends State<DriverOnline> {
   // This ensures driver gets requests even if WebSocket disconnects
   // Checks database directly every 3 seconds
   Future<void> _pollForRideRequests() async {
-    if (driverId.isEmpty || showPopup || activeRideId != null) return;
+    if (driverId.isEmpty || showPopup) return;
+    // Auto can carry up to 3 passengers — keep polling for more requests
+    // as long as there's room, instead of stopping after the first ride.
+    if (activeRideIds.length >= 3) return;
 
     try {
       final request = await ApiService.getPendingRequest(driverId);
@@ -163,7 +169,7 @@ class DriverOnlineState extends State<DriverOnline> {
       _channel?.sink.add(jsonEncode({
         "latitude": lat,
         "longitude": lng,
-        "ride_id": activeRideId,
+        "ride_id": activeRideIds.isNotEmpty ? activeRideIds.first : null,
       }));
     } catch (e) {
       // WebSocket failed — also update via HTTP as backup
@@ -232,7 +238,7 @@ class DriverOnlineState extends State<DriverOnline> {
     final rideId = pendingRequest!['ride_id'];
     setState(() {
       showPopup = false;
-      activeRideId = rideId;
+      activeRideIds.add(rideId);
       _acceptedRideIds.add(rideId);
     });
 
@@ -241,37 +247,61 @@ class DriverOnlineState extends State<DriverOnline> {
       status: 'accepted',
     );
 
-    _startCustomerLocationTracking(rideId);
+    // Make sure the shared tracking timer is running. It will pick up
+    // every ride currently in activeRideIds, so we don't restart it (and
+    // stop tracking other passengers) each time a new ride is accepted.
+    _startCustomerLocationTracking();
   }
 
-  // ── Track customer location ────────────────────────────────────────────
-  void _startCustomerLocationTracking(String rideId) {
-    _customerLocationTimer?.cancel();
+  // ── Track customer location for ALL active rides ───────────────────────
+  // One shared timer loops over every ride currently in activeRideIds, so
+  // accepting a 2nd/3rd passenger no longer stops updating the 1st one's
+  // marker (previously this canceled/restarted per-ride, which meant only
+  // the most recently accepted ride was ever tracked).
+  void _startCustomerLocationTracking() {
+    if (_customerLocationTimer != null) return; // already running
+
     _customerLocationTimer = Timer.periodic(
       const Duration(seconds: 3),
       (_) async {
-        try {
-          final location = await ApiService.getCustomerLocation(rideId);
-          if (location != null && mounted) {
-            setState(() {
-              customerLocations[rideId] = LatLng(
-                location['latitude'],
-                location['longitude'],
-              );
-            });
+        final rideIds = activeRideIds.toList(); // snapshot
+        for (final rideId in rideIds) {
+          try {
+            final location = await ApiService.getCustomerLocation(rideId);
+            if (location != null && mounted) {
+              setState(() {
+                customerLocations[rideId] = LatLng(
+                  location['latitude'],
+                  location['longitude'],
+                );
+              });
+            }
+          } catch (e) {
+            debugPrint('Customer location error ($rideId): $e');
           }
-        } catch (e) {
-          debugPrint('Customer location error: $e');
         }
       },
     );
+  }
+
+  // Remove one completed ride's marker/tracking without touching any
+  // other still-active ride.
+  void _removeCompletedRide(String rideId) {
+    if (!mounted) return;
+    setState(() {
+      activeRideIds.remove(rideId);
+      customerLocations.remove(rideId);
+    });
   }
 
   void _handleRideCompleted(Map<String, dynamic> message) {
     final rideId = message['ride_id'];
     final fare = message['fare'].toString();
 
-    // Find the completed ride in active rides
+    // This passenger has reached their stop — stop tracking/showing their
+    // marker right away. Other active passengers are untouched.
+    _removeCompletedRide(rideId);
+
     // Show cash confirmation if payment is cash
     showDialog(
       context: context,
@@ -415,7 +445,7 @@ class DriverOnlineState extends State<DriverOnline> {
                       ],
                     ),
                     // Show active ride indicator
-                    if (activeRideId != null)
+                    if (activeRideIds.isNotEmpty)
                       Container(
                         margin: const EdgeInsets.only(top: 8),
                         padding: const EdgeInsets.symmetric(

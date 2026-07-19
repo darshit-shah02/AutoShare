@@ -89,10 +89,10 @@ def get_nearby_autos(
 
         can_book = bool(can_book_result.data) if can_book_result.data is not None else False
 
-        # Count passengers by gender from active rides
+        # Count passengers by gender from currently in-progress rides.
         passengers_result = supabase.table("rides").select(
             "user_id"
-        ).eq("driver_id", driver_id).eq("status", "active").execute()
+        ).eq("driver_id", driver_id).eq("status", "accepted").execute()
 
         male_count = 0
         female_count = 0

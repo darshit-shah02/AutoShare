@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:autoshare/Customer/customer_home_page.dart';
 import 'package:autoshare/Payment/payment_success.dart';
 import 'package:autoshare/services/api_service.dart';
@@ -26,16 +27,53 @@ class RideCompleteScreenState extends State<RideCompleteScreen> {
   late Razorpay _razorpay;
   bool _isLoading = false;
 
+  // True while the "waiting for driver to confirm cash" dialog is open,
+  // so the background poller knows to close it before navigating away.
+  bool _cashWaitDialogShowing = false;
+  bool _navigatedAway = false;
+  Timer? _paymentStatusPollTimer;
+
   @override
   void initState() {
     super.initState();
     _razorpay = Razorpay();
     _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
     _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _onPaymentError);
+
+    // Start checking payment status as soon as this screen loads — not
+    // only after the customer taps "Pay Cash to Driver". The driver can
+    // independently confirm "Cash Received" on their own screen first
+    // (e.g. via the demo flow), and this screen needs to notice that and
+    // move on instead of being stuck on "You have arrived!" forever.
+    _startPaymentStatusPolling();
+  }
+
+  void _startPaymentStatusPolling() {
+    _paymentStatusPollTimer?.cancel();
+    _paymentStatusPollTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_navigatedAway || !mounted) return;
+      try {
+        final status = await ApiService.getRideStatus(widget.rideId);
+        if (status['payment_status'] == 'paid') {
+          _paymentStatusPollTimer?.cancel();
+          if (!mounted || _navigatedAway) return;
+          if (_cashWaitDialogShowing) {
+            Navigator.pop(context); // close "waiting" dialog
+            _cashWaitDialogShowing = false;
+          }
+          _goToRating();
+        }
+      } catch (e) {
+        debugPrint('Payment status poll error: $e');
+        // keep polling — transient network errors shouldn't stop this
+      }
+    });
   }
 
   @override
   void dispose() {
+    _paymentStatusPollTimer?.cancel();
     _razorpay.clear();
     super.dispose();
   }
@@ -90,8 +128,13 @@ class RideCompleteScreenState extends State<RideCompleteScreen> {
   }
 
   Future<void> _payCash() async {
-    // Show dialog telling customer to pay driver cash
-    // Driver will confirm receipt on their screen
+    // Show dialog telling customer to pay driver cash.
+    // The shared _paymentStatusPollTimer (already running since initState)
+    // is what actually detects the driver's confirmation and closes this
+    // dialog — we just flag that it's open so the poller knows to dismiss
+    // it. This also means if the driver confirms cash BEFORE the customer
+    // ever taps this button, the poller still catches it independently.
+    _cashWaitDialogShowing = true;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -103,7 +146,10 @@ class RideCompleteScreenState extends State<RideCompleteScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              _cashWaitDialogShowing = false;
+              Navigator.pop(ctx);
+            },
             child: const Text('Cancel',
                 style: TextStyle(color: Colors.black)),
           ),
@@ -111,47 +157,26 @@ class RideCompleteScreenState extends State<RideCompleteScreen> {
       ),
     );
 
-    // Poll for cash confirmation from driver
-    _pollForCashConfirmation();
-  }
-
-  void _pollForCashConfirmation() async {
-    for (int i = 0; i < 60; i++) {  // poll for 3 minutes max
-      await Future.delayed(const Duration(seconds: 3));
-
-      if (!mounted) return;
-
-      try {
-        final status = await ApiService.getRideStatus(widget.rideId);
-
-        print('Payment status: ${status['payment_status']}');  // ← debug
-
-        // ✅ Check payment_status field specifically
-        if (status['payment_status'] == 'paid') {
-          if (!mounted) return;
-          Navigator.pop(context);  // close "waiting" dialog
-          _goToRating();
-          return;
-        }
-      } catch (e) {
-        debugPrint('Poll error: $e');
-        // continue polling
+    // Safety timeout — if the driver never confirms, don't leave the
+    // customer stuck on this dialog forever.
+    Future.delayed(const Duration(minutes: 3), () {
+      if (mounted && _cashWaitDialogShowing && !_navigatedAway) {
+        _cashWaitDialogShowing = false;
+        Navigator.pop(context); // close dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Payment confirmation timed out. Please check with driver.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
       }
-    }
-
-    // Timeout after 3 minutes
-    if (mounted) {
-      Navigator.pop(context);  // close dialog
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Payment confirmation timed out. Please check with driver.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-    }
+    });
   }
 
   void _goToRating() {
+    _navigatedAway = true;
+    _paymentStatusPollTimer?.cancel();
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
